@@ -540,7 +540,7 @@ test "pretty print: tree format" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "a+b");
+    var p = try parser.Parser.init(allocator, "a+b", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -557,7 +557,7 @@ test "pretty print: sexpr format" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "a|b");
+    var p = try parser.Parser.init(allocator, "a|b", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -574,7 +574,7 @@ test "pretty print: compact format" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "a+b*");
+    var p = try parser.Parser.init(allocator, "a+b*", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -591,7 +591,7 @@ test "AST stats" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "(a+|b)*c");
+    var p = try parser.Parser.init(allocator, "(a+|b)*c", .{});
     var tree = try p.parse();
     defer tree.deinit();
 

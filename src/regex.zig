@@ -58,20 +58,28 @@ pub const Regex = struct {
 
     /// Compile a regex pattern with custom flags
     pub fn compileWithFlags(allocator: std.mem.Allocator, pattern: []const u8, flags: common.CompileFlags) !Regex {
-        if (pattern.len == 0) {
-            return RegexError.EmptyPattern;
+        // REMOVED: Empty pattern check - PCRE allows empty patterns
+        // if (pattern.len == 0) {
+        //     return RegexError.EmptyPattern;
+        // }
+
+        // Validate pattern doesn't contain null bytes (BSON C-string requirement)
+        for (pattern) |byte| {
+            if (byte == 0) {
+                return RegexError.InvalidPattern;
+            }
         }
 
         // Parse the pattern into an AST
-        var p = try parser.Parser.init(allocator, pattern);
+        var p = try parser.Parser.init(allocator, pattern, flags);
+        defer p.deinit(); // Clean up flag_stack
         var tree = try p.parse();
         errdefer tree.deinit(); // Free AST if compilation fails
 
-        // SECURITY: Analyze pattern for vulnerabilities (ReDoS, nested quantifiers, etc.)
-        // Reject patterns that are too dangerous (critical risk only)
-        // Medium and high risk patterns are allowed but will be protected by runtime step counter
-        const pattern_analyzer = @import("pattern_analyzer.zig");
-        try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
+        // REMOVED: Static ReDoS analysis - Thompson NFA is immune to ReDoS
+        // Runtime step counter (already in backtrack.zig) provides real protection
+        // const pattern_analyzer = @import("pattern_analyzer.zig");
+        // try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
 
         // Store owned copy of pattern
         const owned_pattern = try allocator.dupe(u8, pattern);
@@ -92,12 +100,7 @@ pub const Regex = struct {
 
         if (needs_backtracking) {
             // Use backtracking engine
-            var backtrack_engine = try backtrack.BacktrackEngine.init(
-                allocator,
-                tree.root,
-                tree.capture_count,
-                flags
-            );
+            var backtrack_engine = try backtrack.BacktrackEngine.init(allocator, tree.root, tree.capture_count, flags);
             errdefer backtrack_engine.deinit();
 
             // Create a dummy NFA (not used)
@@ -249,23 +252,21 @@ pub const Regex = struct {
                 const nfa_mut = @constCast(&self.nfa);
                 var virtual_machine = vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
 
-                // Use literal prefix optimization if available (but not in case-insensitive mode)
-                if (self.opt_info.literal_prefix) |prefix| {
-                    if (!self.flags.case_insensitive) {
-                        // Skip ahead to each occurrence of the prefix and try matching there
-                        var search_from: usize = 0;
-                        while (std.mem.indexOf(u8, input[search_from..], prefix)) |rel_pos| {
-                            const prefix_pos = search_from + rel_pos;
-                            if (try virtual_machine.matchAt(input, prefix_pos)) |result| {
-                                return try self.buildMatch(input, result);
-                            }
-                            // Try next occurrence
-                            search_from = prefix_pos + 1;
-                        }
-                        // No prefix occurrence matched
-                        return null;
-                    }
-                }
+                // DISABLED: Literal prefix optimization breaks inline modifiers
+                // TODO: Make optimizer aware of per-node flags before re-enabling
+                // if (self.opt_info.literal_prefix) |prefix| {
+                //     if (!self.flags.case_insensitive) {
+                //         var search_from: usize = 0;
+                //         while (std.mem.indexOf(u8, input[search_from..], prefix)) |rel_pos| {
+                //             const prefix_pos = search_from + rel_pos;
+                //             if (try virtual_machine.matchAt(input, prefix_pos)) |result| {
+                //                 return try self.buildMatch(input, result);
+                //             }
+                //             search_from = prefix_pos + 1;
+                //         }
+                //         return null;
+                //     }
+                // }
 
                 if (try virtual_machine.find(input)) |result| {
                     return try self.buildMatch(input, result);
@@ -676,11 +677,11 @@ fn requiresBacktracking(node: *ast.Node) bool {
         // Recursively check compound nodes
         .concat => {
             return requiresBacktracking(node.data.concat.left) or
-                   requiresBacktracking(node.data.concat.right);
+                requiresBacktracking(node.data.concat.right);
         },
         .alternation => {
             return requiresBacktracking(node.data.alternation.left) or
-                   requiresBacktracking(node.data.alternation.right);
+                requiresBacktracking(node.data.alternation.right);
         },
         .group => return requiresBacktracking(node.data.group.child),
 

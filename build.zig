@@ -281,6 +281,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_named_captures_tests = b.addRunArtifact(named_captures_tests);
 
+    const inline_modifiers_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/inline_modifiers.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_inline_modifiers_tests = b.addRunArtifact(inline_modifiers_tests);
+
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -312,6 +324,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_string_anchors_tests.step);
     test_step.dependOn(&run_multiline_dotall_tests.step);
     test_step.dependOn(&run_named_captures_tests.step);
+    test_step.dependOn(&run_inline_modifiers_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;

@@ -522,7 +522,7 @@ test "ast optimizer: constant folding" {
     const parser = @import("parser.zig");
 
     // Test repeat{1,1}(x) -> x
-    var p = try parser.Parser.init(allocator, "a{1,1}");
+    var p = try parser.Parser.init(allocator, "a{1,1}", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -537,7 +537,7 @@ test "ast optimizer: simplify quantifiers" {
     const parser = @import("parser.zig");
 
     // Test repeat{0,1} -> optional
-    var p = try parser.Parser.init(allocator, "a{0,1}");
+    var p = try parser.Parser.init(allocator, "a{0,1}", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -553,7 +553,7 @@ test "ast optimizer: remove redundant" {
     const parser = @import("parser.zig");
 
     // Test (a*)* -> a*
-    var p = try parser.Parser.init(allocator, "(a*)*");
+    var p = try parser.Parser.init(allocator, "(a*)*", .{});
     var tree = try p.parse();
     defer tree.deinit();
 

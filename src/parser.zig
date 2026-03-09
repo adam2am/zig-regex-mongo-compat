@@ -48,12 +48,14 @@ pub const Lexer = struct {
     input: []const u8,
     pos: usize,
     start_pos: usize,
+    flags: common.CompileFlags,
 
-    pub fn init(input: []const u8) Lexer {
+    pub fn init(input: []const u8, flags: common.CompileFlags) Lexer {
         return .{
             .input = input,
             .pos = 0,
             .start_pos = 0,
+            .flags = flags,
         };
     }
 
@@ -104,12 +106,26 @@ pub const Lexer = struct {
                 // Literal escape of special characters
                 return self.makeToken(.literal, c);
             },
-            else => RegexError.InvalidEscapeSequence,
+            else => {
+                // PCRE compatibility: unknown escapes treated as literals
+                return self.makeToken(.literal, c);
+            },
         };
     }
 
     pub fn next(self: *Lexer) !Token {
         self.start_pos = self.pos;
+
+        if (self.flags.extended) {
+            while (self.peek()) |c| {
+                if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+                    _ = self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.start_pos = self.pos;
+        }
 
         const c = self.advance() orelse {
             return self.makeToken(.eof, 0);
@@ -147,20 +163,34 @@ pub const Parser = struct {
     current_token: Token,
     capture_count: usize,
     nesting_depth: usize,
+    flag_stack: std.ArrayList(common.CompileFlags),
 
     /// Maximum nesting depth to prevent stack overflow from patterns like (((((...
     pub const MAX_NESTING_DEPTH: usize = 100;
 
-    pub fn init(allocator: std.mem.Allocator, pattern: []const u8) !Parser {
-        var lexer = Lexer.init(pattern);
+    pub fn init(allocator: std.mem.Allocator, pattern: []const u8, flags: common.CompileFlags) !Parser {
+        var lexer = Lexer.init(pattern, flags);
         const first_token = try lexer.next();
+
+        var flag_stack = try std.ArrayList(common.CompileFlags).initCapacity(allocator, 1);
+        try flag_stack.append(allocator, flags); // Push base flags
+
         return .{
             .lexer = lexer,
             .allocator = allocator,
             .current_token = first_token,
             .capture_count = 0,
             .nesting_depth = 0,
+            .flag_stack = flag_stack,
         };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.flag_stack.deinit(self.allocator);
+    }
+
+    fn currentFlags(self: *Parser) common.CompileFlags {
+        return self.flag_stack.items[self.flag_stack.items.len - 1];
     }
 
     fn advance(self: *Parser) !void {
@@ -372,19 +402,23 @@ pub const Parser = struct {
         switch (token.token_type) {
             .literal => {
                 try self.advance();
-                return ast.Node.createLiteral(self.allocator, token.value, span);
+                const flags = self.currentFlags();
+                return ast.Node.createLiteral(self.allocator, token.value, flags.case_insensitive, span);
             },
             .dot => {
                 try self.advance();
-                return ast.Node.createAny(self.allocator, span);
+                const flags = self.currentFlags();
+                return ast.Node.createAny(self.allocator, flags.dot_all, span);
             },
             .caret => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .start_line, span);
+                const flags = self.currentFlags();
+                return ast.Node.createAnchor(self.allocator, .start_line, flags.multiline, span);
             },
             .dollar => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .end_line, span);
+                const flags = self.currentFlags();
+                return ast.Node.createAnchor(self.allocator, .end_line, flags.multiline, span);
             },
             .escape_d => {
                 try self.advance();
@@ -393,7 +427,7 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.digit.negated,
-                }, span);
+                }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_D => {
                 try self.advance();
@@ -401,7 +435,7 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.non_digit.negated,
-                }, span);
+                }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_w => {
                 try self.advance();
@@ -409,7 +443,7 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.word.negated,
-                }, span);
+                }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_W => {
                 try self.advance();
@@ -417,7 +451,7 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.non_word.negated,
-                }, span);
+                }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_s => {
                 try self.advance();
@@ -425,7 +459,7 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.whitespace.negated,
-                }, span);
+                }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_S => {
                 try self.advance();
@@ -433,27 +467,27 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.non_whitespace.negated,
-                }, span);
+                }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_b => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .word_boundary, span);
+                return ast.Node.createAnchor(self.allocator, .word_boundary, self.currentFlags().multiline, span);
             },
             .escape_B => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .non_word_boundary, span);
+                return ast.Node.createAnchor(self.allocator, .non_word_boundary, self.currentFlags().multiline, span);
             },
             .escape_A => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .start_text, span);
+                return ast.Node.createAnchor(self.allocator, .start_text, self.currentFlags().multiline, span);
             },
             .escape_z, .escape_Z => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .end_text, span);
+                return ast.Node.createAnchor(self.allocator, .end_text, self.currentFlags().multiline, span);
             },
             .escape_char => {
                 try self.advance();
-                return ast.Node.createLiteral(self.allocator, token.value, span);
+                return ast.Node.createLiteral(self.allocator, token.value, self.currentFlags().case_insensitive, token.span);
             },
             .backref => {
                 try self.advance();
@@ -476,6 +510,63 @@ pub const Parser = struct {
 
                 if (self.current_token.token_type == .question) {
                     try self.advance(); // consume ?
+
+                    // Check for inline modifiers: (?i), (?-i), (?i:...), (?im), etc.
+                    if (self.current_token.token_type == .literal) {
+                        const c = self.current_token.value;
+                        if (c == 'i' or c == 'm' or c == 's' or c == 'x' or c == '-') {
+                            // Parse inline modifiers
+                            var enable = true;
+                            var new_flags = self.currentFlags();
+                            var is_modifier_only = false;
+
+                            while (self.current_token.token_type == .literal) {
+                                const flag_char = self.current_token.value;
+                                if (flag_char == '-') {
+                                    enable = false;
+                                    try self.advance();
+                                } else if (flag_char == 'i') {
+                                    new_flags.case_insensitive = enable;
+                                    try self.advance();
+                                } else if (flag_char == 'm') {
+                                    new_flags.multiline = enable;
+                                    try self.advance();
+                                } else if (flag_char == 's') {
+                                    new_flags.dot_all = enable;
+                                    try self.advance();
+                                } else if (flag_char == 'x') {
+                                    new_flags.extended = enable;
+                                    try self.advance();
+                                } else if (flag_char == ':') {
+                                    // Scoped modifier (?i:...)
+                                    try self.advance(); // consume :
+                                    try self.flag_stack.append(self.allocator, new_flags);
+                                    defer _ = self.flag_stack.pop();
+
+                                    const child = try self.parseAlternation();
+                                    errdefer child.destroy(self.allocator);
+                                    try self.expect(.rparen);
+                                    return ast.Node.createGroup(self.allocator, child, null, span);
+                                } else {
+                                    // Not a flag character, break
+                                    break;
+                                }
+                            }
+
+                            // Check if it's a pure modifier (?i) or scoped (?i:...)
+                            if (self.current_token.token_type == .rparen) {
+                                // Pure modifier (?i) - modifies parent scope
+                                is_modifier_only = true;
+                                try self.advance(); // consume )
+
+                                // Modify the parent scope's flags (top of stack)
+                                self.flag_stack.items[self.flag_stack.items.len - 1] = new_flags;
+
+                                // Return empty node (modifier doesn't consume input)
+                                return ast.Node.createEmpty(self.allocator, span);
+                            }
+                        }
+                    }
 
                     // Check what follows the ?
                     if (self.current_token.token_type == .literal) {
@@ -555,6 +646,10 @@ pub const Parser = struct {
                     self.capture_count += 1;
                     capture_index = self.capture_count;
                 }
+
+                // Push current flags for this group scope
+                try self.flag_stack.append(self.allocator, self.currentFlags());
+                defer _ = self.flag_stack.pop();
 
                 const child = try self.parseAlternation();
                 errdefer child.destroy(self.allocator);
@@ -657,10 +752,7 @@ pub const Parser = struct {
             .dollar => '$',
             .lbracket => '[', // Allow [ as literal (for non-POSIX cases)
             // These should not appear here
-            .rbracket, .caret, .backslash,
-            .escape_d, .escape_D, .escape_w, .escape_W,
-            .escape_s, .escape_S, .escape_b, .escape_B,
-            .escape_A, .escape_z, .escape_Z, .backref, .eof => null,
+            .rbracket, .caret, .backslash, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .backref, .eof => null,
         };
     }
 
@@ -685,7 +777,8 @@ pub const Parser = struct {
 
             if (current_pos + 1 < self.lexer.input.len and
                 self.lexer.input[current_pos] == '[' and
-                self.lexer.input[current_pos + 1] == ':') {
+                self.lexer.input[current_pos + 1] == ':')
+            {
 
                 // Find the closing :]
                 var found_posix = false;
@@ -693,7 +786,7 @@ pub const Parser = struct {
                 while (i + 1 < self.lexer.input.len) : (i += 1) {
                     if (self.lexer.input[i] == ':' and self.lexer.input[i + 1] == ']') {
                         // Found [:name:]
-                        const class_name = self.lexer.input[current_pos + 2..i];
+                        const class_name = self.lexer.input[current_pos + 2 .. i];
 
                         // Skip to the character AFTER ':]' which should be the outer ']' or more chars
                         // We want the lexer to be positioned so that the NEXT token read will be correct
@@ -761,7 +854,7 @@ pub const Parser = struct {
         };
 
         const span = common.Span.init(start, self.current_token.span.end);
-        return ast.Node.createCharClass(self.allocator, char_class, span);
+        return ast.Node.createCharClass(self.allocator, char_class, self.currentFlags().case_insensitive, span);
     }
 };
 
@@ -808,7 +901,7 @@ test "lexer escape sequences" {
 
 test "parser simple literal" {
     const allocator = std.testing.allocator;
-    var parser = try Parser.init(allocator, "abc");
+    var parser = try Parser.init(allocator, "abc", .{});
     var result = try parser.parse();
     defer result.deinit();
 
@@ -817,7 +910,7 @@ test "parser simple literal" {
 
 test "parser alternation" {
     const allocator = std.testing.allocator;
-    var parser = try Parser.init(allocator, "a|b");
+    var parser = try Parser.init(allocator, "a|b", .{});
     var result = try parser.parse();
     defer result.deinit();
 
@@ -826,7 +919,7 @@ test "parser alternation" {
 
 test "parser star" {
     const allocator = std.testing.allocator;
-    var parser = try Parser.init(allocator, "a*");
+    var parser = try Parser.init(allocator, "a*", .{});
     var result = try parser.parse();
     defer result.deinit();
 
@@ -835,7 +928,7 @@ test "parser star" {
 
 test "parser group" {
     const allocator = std.testing.allocator;
-    var parser = try Parser.init(allocator, "(ab)");
+    var parser = try Parser.init(allocator, "(ab)", .{});
     var result = try parser.parse();
     defer result.deinit();
 
@@ -877,7 +970,7 @@ test "parser: nesting depth limit" {
     }
 
     const pattern = pattern_buf[0..pos];
-    var parser = try Parser.init(allocator, pattern);
+    var parser = try Parser.init(allocator, pattern, .{});
     const result = parser.parse();
 
     try std.testing.expectError(RegexError.NestingTooDeep, result);
@@ -907,7 +1000,7 @@ test "parser: acceptable nesting depth" {
     }
 
     const pattern = pattern_buf[0..pos];
-    var parser = try Parser.init(allocator, pattern);
+    var parser = try Parser.init(allocator, pattern, .{});
     var result = try parser.parse();
     defer result.deinit();
 

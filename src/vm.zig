@@ -71,8 +71,8 @@ pub const VM = struct {
     }
 
     /// Helper to compare characters with case-insensitive support
-    fn charsMatch(self: *const VM, pattern_char: u8, input_char: u8) bool {
-        if (!self.flags.case_insensitive) {
+    fn charsMatch(_: *const VM, pattern_char: u8, input_char: u8, ignore_case: bool) bool {
+        if (!ignore_case) {
             return pattern_char == input_char;
         }
 
@@ -180,12 +180,12 @@ pub const VM = struct {
 
                 for (state.transitions.items) |transition| {
                     const matches = switch (transition.transition_type) {
-                        .char => self.charsMatch(transition.data.char, c),
-                        .any => if (self.flags.dot_all)
+                        .char => self.charsMatch(transition.data.char.c, c, transition.data.char.ignore_case),
+                        .any => if (transition.data.any.dot_all)
                             true
                         else
                             c != '\n',
-                        .char_class => transition.data.char_class.matches(c),
+                        .char_class => transition.data.char_class.class.matches(c),
                         .anchor => false, // Anchors don't consume input
                         .epsilon => false, // Already handled in epsilon closure
                     };
@@ -311,14 +311,14 @@ pub const VM = struct {
                     // Don't recurse immediately - let addEpsilonClosure handle it iteratively
                 },
                 .anchor => {
-                    const anchor_type = transition.data.anchor;
+                    const anchor_data = transition.data.anchor;
                     // Check if anchor matches at current position
-                    const anchor_matches = switch (anchor_type) {
-                        .start_line => if (self.flags.multiline)
+                    const anchor_matches = switch (anchor_data.type) {
+                        .start_line => if (anchor_data.multiline)
                             pos == 0 or (pos > 0 and input[pos - 1] == '\n')
                         else
                             pos == 0,
-                        .end_line => if (self.flags.multiline)
+                        .end_line => if (anchor_data.multiline)
                             pos == input.len or (pos < input.len and input[pos] == '\n')
                         else
                             pos == input.len,
@@ -381,7 +381,7 @@ test "vm match literal" {
     try nfa.markAccepting(s1);
 
     var state0 = nfa.getState(s0);
-    try state0.addTransition(compiler.Transition.char('a', s1));
+    try state0.addTransition(compiler.Transition.char('a', false, s1));
 
     var vm = VM.init(allocator, &nfa, 0, .{});
     const result = try vm.matchAt("a", 0);
@@ -408,7 +408,7 @@ test "vm find in string" {
     try nfa.markAccepting(s1);
 
     var state0 = nfa.getState(s0);
-    try state0.addTransition(compiler.Transition.char('b', s1));
+    try state0.addTransition(compiler.Transition.char('b', false, s1));
 
     var vm = VM.init(allocator, &nfa, 0, .{});
     const result = try vm.find("abc");

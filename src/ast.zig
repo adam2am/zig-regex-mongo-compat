@@ -74,17 +74,17 @@ pub const Node = struct {
     span: common.Span,
 
     pub const NodeData = union(NodeType) {
-        literal: u8,
-        any: void,
+        literal: struct { c: u8, ignore_case: bool },
+        any: struct { dot_all: bool },
         concat: Concat,
         alternation: Alternation,
         star: Quantifier,
         plus: Quantifier,
         optional: Quantifier,
         repeat: Repeat,
-        char_class: common.CharClass,
+        char_class: struct { class: common.CharClass, ignore_case: bool },
         group: Group,
-        anchor: AnchorType,
+        anchor: struct { type: AnchorType, multiline: bool },
         empty: void,
         lookahead: Assertion,
         lookbehind: Assertion,
@@ -128,21 +128,21 @@ pub const Node = struct {
         name: ?[]const u8 = null, // optional name for named backreferences
     };
 
-    pub fn createLiteral(allocator: std.mem.Allocator, c: u8, span: common.Span) !*Node {
+    pub fn createLiteral(allocator: std.mem.Allocator, c: u8, ignore_case: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .literal,
-            .data = .{ .literal = c },
+            .data = .{ .literal = .{ .c = c, .ignore_case = ignore_case } },
             .span = span,
         };
         return node;
     }
 
-    pub fn createAny(allocator: std.mem.Allocator, span: common.Span) !*Node {
+    pub fn createAny(allocator: std.mem.Allocator, dot_all: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .any,
-            .data = .{ .any = {} },
+            .data = .{ .any = .{ .dot_all = dot_all } },
             .span = span,
         };
         return node;
@@ -208,11 +208,11 @@ pub const Node = struct {
         return node;
     }
 
-    pub fn createCharClass(allocator: std.mem.Allocator, char_class: common.CharClass, span: common.Span) !*Node {
+    pub fn createCharClass(allocator: std.mem.Allocator, char_class: common.CharClass, ignore_case: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .char_class,
-            .data = .{ .char_class = char_class },
+            .data = .{ .char_class = .{ .class = char_class, .ignore_case = ignore_case } },
             .span = span,
         };
         return node;
@@ -232,11 +232,11 @@ pub const Node = struct {
         return node;
     }
 
-    pub fn createAnchor(allocator: std.mem.Allocator, anchor_type: AnchorType, span: common.Span) !*Node {
+    pub fn createAnchor(allocator: std.mem.Allocator, anchor_type: AnchorType, multiline: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .anchor,
-            .data = .{ .anchor = anchor_type },
+            .data = .{ .anchor = .{ .type = anchor_type, .multiline = multiline } },
             .span = span,
         };
         return node;
@@ -320,7 +320,7 @@ pub const Node = struct {
                 // Check if this is a heap-allocated slice (not a static array)
                 // by checking if the pointer is in the heap range
                 // For now, we'll free all of them - predefined classes aren't created via createCharClass from parser
-                allocator.free(char_class.ranges);
+                allocator.free(char_class.class.ranges);
             },
             else => {},
         }

@@ -26,10 +26,10 @@ pub const Transition = struct {
 
     pub const TransitionData = union(TransitionType) {
         epsilon: void,
-        char: u8,
-        char_class: common.CharClass,
-        any: void,
-        anchor: ast.AnchorType,
+        char: struct { c: u8, ignore_case: bool },
+        char_class: struct { class: common.CharClass, ignore_case: bool },
+        any: struct { dot_all: bool },
+        anchor: struct { type: ast.AnchorType, multiline: bool },
     };
 
     pub fn epsilon(to: StateId) Transition {
@@ -40,40 +40,43 @@ pub const Transition = struct {
         };
     }
 
-    pub fn char(c: u8, to: StateId) Transition {
+    pub fn char(c: u8, ignore_case: bool, to: StateId) Transition {
         return .{
             .transition_type = .char,
             .to = to,
-            .data = .{ .char = c },
+            .data = .{ .char = .{ .c = c, .ignore_case = ignore_case } },
         };
     }
 
-    pub fn charClass(allocator: std.mem.Allocator, class: common.CharClass, to: StateId) !Transition {
+    pub fn charClass(allocator: std.mem.Allocator, class: common.CharClass, ignore_case: bool, to: StateId) !Transition {
         // Duplicate the ranges so we own them and can free them later
         const ranges_copy = try allocator.dupe(common.CharRange, class.ranges);
         return .{
             .transition_type = .char_class,
             .to = to,
             .data = .{ .char_class = .{
-                .ranges = ranges_copy,
-                .negated = class.negated,
-            }},
+                .class = .{
+                    .ranges = ranges_copy,
+                    .negated = class.negated,
+                },
+                .ignore_case = ignore_case,
+            } },
         };
     }
 
-    pub fn any(to: StateId) Transition {
+    pub fn any(dot_all: bool, to: StateId) Transition {
         return .{
             .transition_type = .any,
             .to = to,
-            .data = .{ .any = {} },
+            .data = .{ .any = .{ .dot_all = dot_all } },
         };
     }
 
-    pub fn anchor(anchor_type: ast.AnchorType, to: StateId) Transition {
+    pub fn anchor(anchor_type: ast.AnchorType, multiline: bool, to: StateId) Transition {
         return .{
             .transition_type = .anchor,
             .to = to,
-            .data = .{ .anchor = anchor_type },
+            .data = .{ .anchor = .{ .type = anchor_type, .multiline = multiline } },
         };
     }
 };
@@ -100,7 +103,7 @@ pub const State = struct {
         // Free char_class ranges in transitions
         for (self.transitions.items) |transition| {
             if (transition.transition_type == .char_class) {
-                self.allocator.free(transition.data.char_class.ranges);
+                self.allocator.free(transition.data.char_class.class.ranges);
             }
         }
         self.transitions.deinit(self.allocator);
@@ -189,17 +192,17 @@ pub const Compiler = struct {
     /// Compile a single AST node into an NFA fragment
     fn compileNode(self: *Compiler, node: *ast.Node) anyerror!Fragment {
         return switch (node.node_type) {
-            .literal => try self.compileLiteral(node.data.literal),
-            .any => try self.compileAny(),
+            .literal => try self.compileLiteral(node.data.literal.c, node.data.literal.ignore_case),
+            .any => try self.compileAny(node.data.any.dot_all),
             .concat => try self.compileConcat(node.data.concat),
             .alternation => try self.compileAlternation(node.data.alternation),
             .star => try self.compileStar(node.data.star.child, node.data.star.greedy),
             .plus => try self.compilePlus(node.data.plus.child, node.data.plus.greedy),
             .optional => try self.compileOptional(node.data.optional.child, node.data.optional.greedy),
             .repeat => try self.compileRepeat(node.data.repeat),
-            .char_class => try self.compileCharClass(node.data.char_class),
+            .char_class => try self.compileCharClass(node.data.char_class.class, node.data.char_class.ignore_case),
             .group => try self.compileGroup(node.data.group),
-            .anchor => try self.compileAnchor(node.data.anchor),
+            .anchor => try self.compileAnchor(node.data.anchor.type, node.data.anchor.multiline),
             .empty => try self.compileEmpty(),
             // These features require backtracking engine
             .lookahead, .lookbehind, .backref => @import("errors.zig").RegexError.NotImplemented,
@@ -207,23 +210,23 @@ pub const Compiler = struct {
     }
 
     /// Compile a literal character
-    fn compileLiteral(self: *Compiler, c: u8) !Fragment {
+    fn compileLiteral(self: *Compiler, c: u8, ignore_case: bool) !Fragment {
         const start = try self.nfa.addState();
         const accept = try self.nfa.addState();
 
         const start_state = self.nfa.getState(start);
-        try start_state.addTransition(Transition.char(c, accept));
+        try start_state.addTransition(Transition.char(c, ignore_case, accept));
 
         return Fragment{ .start = start, .accept = accept };
     }
 
     /// Compile any character (.)
-    fn compileAny(self: *Compiler) !Fragment {
+    fn compileAny(self: *Compiler, dot_all: bool) !Fragment {
         const start = try self.nfa.addState();
         const accept = try self.nfa.addState();
 
         const start_state = self.nfa.getState(start);
-        try start_state.addTransition(Transition.any(accept));
+        try start_state.addTransition(Transition.any(dot_all, accept));
 
         return Fragment{ .start = start, .accept = accept };
     }
@@ -437,12 +440,12 @@ pub const Compiler = struct {
     }
 
     /// Compile character class
-    fn compileCharClass(self: *Compiler, char_class: common.CharClass) !Fragment {
+    fn compileCharClass(self: *Compiler, char_class: common.CharClass, ignore_case: bool) !Fragment {
         const start = try self.nfa.addState();
         const accept = try self.nfa.addState();
 
         const start_state = self.nfa.getState(start);
-        try start_state.addTransition(try Transition.charClass(self.nfa.allocator, char_class, accept));
+        try start_state.addTransition(try Transition.charClass(self.nfa.allocator, char_class, ignore_case, accept));
 
         return Fragment{ .start = start, .accept = accept };
     }
@@ -476,12 +479,12 @@ pub const Compiler = struct {
     }
 
     /// Compile anchor
-    fn compileAnchor(self: *Compiler, anchor_type: ast.AnchorType) !Fragment {
+    fn compileAnchor(self: *Compiler, anchor_type: ast.AnchorType, multiline: bool) !Fragment {
         const start = try self.nfa.addState();
         const accept = try self.nfa.addState();
 
         const start_state = self.nfa.getState(start);
-        try start_state.addTransition(Transition.anchor(anchor_type, accept));
+        try start_state.addTransition(Transition.anchor(anchor_type, multiline, accept));
 
         return Fragment{ .start = start, .accept = accept };
     }
@@ -507,13 +510,13 @@ test "compile literal" {
     const node = try ast.Node.createLiteral(allocator, 'a', span);
     defer allocator.destroy(node);
 
-    const frag = try compiler.compileLiteral('a');
+    const frag = try compiler.compileLiteral('a', false);
     try std.testing.expect(frag.start != frag.accept);
 }
 
 test "compile concatenation" {
     const allocator = std.testing.allocator;
-    var parser = try @import("parser.zig").Parser.init(allocator, "ab");
+    var parser = try @import("parser.zig").Parser.init(allocator, "ab", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 
@@ -526,7 +529,7 @@ test "compile concatenation" {
 
 test "compile alternation" {
     const allocator = std.testing.allocator;
-    var parser = try @import("parser.zig").Parser.init(allocator, "a|b");
+    var parser = try @import("parser.zig").Parser.init(allocator, "a|b", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 
@@ -539,7 +542,7 @@ test "compile alternation" {
 
 test "compile star" {
     const allocator = std.testing.allocator;
-    var parser = try @import("parser.zig").Parser.init(allocator, "a*");
+    var parser = try @import("parser.zig").Parser.init(allocator, "a*", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 
@@ -555,7 +558,7 @@ test "compiler: repeat expansion limit" {
 
     // Pattern with quantifier exceeding MAX_REPEAT_EXPANSION (10,000)
     // Parser allows up to 100,000, but compiler should reject > 10,000
-    var parser = try @import("parser.zig").Parser.init(allocator, "a{50000}");
+    var parser = try @import("parser.zig").Parser.init(allocator, "a{50000}", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 
@@ -570,7 +573,7 @@ test "compiler: acceptable repeat expansion" {
     const allocator = std.testing.allocator;
 
     // Pattern with quantifier within MAX_REPEAT_EXPANSION
-    var parser = try @import("parser.zig").Parser.init(allocator, "a{100}");
+    var parser = try @import("parser.zig").Parser.init(allocator, "a{100}", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 

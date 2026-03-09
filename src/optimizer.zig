@@ -43,15 +43,15 @@ pub const Optimizer = struct {
             const concat = root.data.concat;
             // Check if starts with ^
             if (concat.left.node_type == .anchor and
-                concat.left.data.anchor == .start_line)
+                concat.left.data.anchor.type == .start_line)
             {
                 info.anchored_start = true;
             }
         } else if (root.node_type == .anchor) {
-            if (root.data.anchor == .start_line) {
+            if (root.data.anchor.type == .start_line) {
                 info.anchored_start = true;
             }
-            if (root.data.anchor == .end_line) {
+            if (root.data.anchor.type == .end_line) {
                 info.anchored_end = true;
             }
         }
@@ -89,7 +89,7 @@ pub const Optimizer = struct {
     fn collectLiteralPrefix(self: *Optimizer, node: *ast.Node, prefix: *std.ArrayList(u8)) !bool {
         return switch (node.node_type) {
             .literal => {
-                try prefix.append(self.allocator, node.data.literal);
+                try prefix.append(self.allocator, node.data.literal.c);
                 return true;
             },
             .concat => {
@@ -212,7 +212,7 @@ test "optimizer: literal prefix extraction" {
     const allocator = std.testing.allocator;
     const Parser = @import("parser.zig").Parser;
 
-    var parser = try Parser.init(allocator, "hello.*world");
+    var parser = try Parser.init(allocator, "hello.*world", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 
@@ -230,7 +230,7 @@ test "optimizer: anchored detection" {
     const allocator = std.testing.allocator;
     const Parser = @import("parser.zig").Parser;
 
-    var parser = try Parser.init(allocator, "^hello$");
+    var parser = try Parser.init(allocator, "^hello$", .{});
     var tree = try parser.parse();
     defer tree.deinit();
 
@@ -246,7 +246,7 @@ test "optimizer: min/max length calculation" {
     const Parser = @import("parser.zig").Parser;
 
     // Fixed length pattern
-    var parser1 = try Parser.init(allocator, "hello");
+    var parser1 = try Parser.init(allocator, "hello", .{});
     var tree1 = try parser1.parse();
     defer tree1.deinit();
 
@@ -258,7 +258,7 @@ test "optimizer: min/max length calculation" {
     try std.testing.expectEqual(@as(?usize, 5), info1.max_length);
 
     // Variable length pattern
-    var parser2 = try Parser.init(allocator, "a+");
+    var parser2 = try Parser.init(allocator, "a+", .{});
     var tree2 = try parser2.parse();
     defer tree2.deinit();
 

@@ -324,7 +324,6 @@ pub const PatternAnalyzer = struct {
     }
 
     fn nodesAreIdentical(self: *PatternAnalyzer, left: *ast.Node, right: *ast.Node) bool {
-
         if (left.node_type != right.node_type) return false;
 
         return switch (left.node_type) {
@@ -337,7 +336,7 @@ pub const PatternAnalyzer = struct {
                 const left_concat = left.data.concat;
                 const right_concat = right.data.concat;
                 return self.nodesAreIdentical(left_concat.left, right_concat.left) and
-                       self.nodesAreIdentical(left_concat.right, right_concat.right);
+                    self.nodesAreIdentical(left_concat.right, right_concat.right);
             },
             else => false,
         };
@@ -384,7 +383,7 @@ test "analyzer: safe pattern" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "abc");
+    var p = try parser.Parser.init(allocator, "abc", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -399,7 +398,7 @@ test "analyzer: nested quantifiers (a+)+" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "(a+)+");
+    var p = try parser.Parser.init(allocator, "(a+)+", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -415,7 +414,7 @@ test "analyzer: nested stars (a*)*" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "(a*)*");
+    var p = try parser.Parser.init(allocator, "(a*)*", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -429,7 +428,7 @@ test "analyzer: ambiguous alternation (a|a)*" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "(a|a)*");
+    var p = try parser.Parser.init(allocator, "(a|a)*", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -443,7 +442,7 @@ test "analyzer: backreference" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "(a)\\1");
+    var p = try parser.Parser.init(allocator, "(a)\\1", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -458,7 +457,7 @@ test "analyzer: validation rejects critical risk" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "(a+)+");
+    var p = try parser.Parser.init(allocator, "(a+)+", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -471,7 +470,7 @@ test "analyzer: validation accepts safe pattern" {
     const allocator = std.testing.allocator;
     const parser = @import("parser.zig");
 
-    var p = try parser.Parser.init(allocator, "abc+");
+    var p = try parser.Parser.init(allocator, "abc+", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -484,7 +483,7 @@ test "analyzer: complex URL pattern - part" {
     const parser = @import("parser.zig");
 
     const pattern = "(?:/\\w+)*";
-    var p = try parser.Parser.init(allocator, pattern);
+    var p = try parser.Parser.init(allocator, pattern, .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -500,7 +499,7 @@ test "analyzer: full URL pattern" {
     const parser = @import("parser.zig");
 
     const pattern = "(?:https?://)?([a-z]+)(?:/\\w+)*";
-    var p = try parser.Parser.init(allocator, pattern);
+    var p = try parser.Parser.init(allocator, pattern, .{});
     var tree = try p.parse();
     defer tree.deinit();
 

@@ -5,7 +5,6 @@ const common = @import("common.zig");
 /// Backtracking-based regex engine
 /// Supports: lazy quantifiers, lookahead/lookbehind, backreferences
 /// Trade-off: O(2^n) worst case, but supports features impossible in Thompson NFA
-
 /// Match result from backtracking engine
 pub const BacktrackMatch = struct {
     start: usize,
@@ -82,9 +81,10 @@ pub const BacktrackEngine = struct {
     /// Find first match in input
     pub fn find(self: *BacktrackEngine, input: []const u8) ?BacktrackMatch {
         self.input = input;
-        // Enable lazy backtrack disabling for find() - prefer different positions over more matches
-        self.disable_lazy_backtrack = true;
-        defer self.disable_lazy_backtrack = false;
+        // REMOVED: This flag broke lazy quantifiers by preventing expansion
+        // Lazy quantifiers need backtracking to work correctly
+        // self.disable_lazy_backtrack = true;
+        // defer self.disable_lazy_backtrack = false;
 
         var pos: usize = 0;
         while (pos <= input.len) : (pos += 1) {
@@ -146,17 +146,17 @@ pub const BacktrackEngine = struct {
         }
 
         return switch (node.node_type) {
-            .literal => self.matchLiteral(node.data.literal, pos),
-            .any => self.matchAny(pos),
+            .literal => self.matchLiteral(node.data, pos),
+            .any => self.matchAny(node.data, pos),
             .concat => self.matchConcat(node.data.concat, pos),
             .alternation => self.matchAlternation(node.data.alternation, pos),
             .star => self.matchStar(node.data.star, pos),
             .plus => self.matchPlus(node.data.plus, pos),
             .optional => self.matchOptional(node.data.optional, pos),
             .repeat => self.matchRepeat(node.data.repeat, pos),
-            .char_class => self.matchCharClass(node.data.char_class, pos),
+            .char_class => self.matchCharClass(node.data.char_class.class, pos),
             .group => self.matchGroup(node.data.group, pos),
-            .anchor => self.matchAnchor(node.data.anchor, pos),
+            .anchor => self.matchAnchor(node.data, pos),
             .empty => pos,
             .lookahead => self.matchLookahead(node.data.lookahead, pos),
             .lookbehind => self.matchLookbehind(node.data.lookbehind, pos),
@@ -164,11 +164,13 @@ pub const BacktrackEngine = struct {
         };
     }
 
-    fn matchLiteral(self: *BacktrackEngine, c: u8, pos: usize) ?usize {
+    fn matchLiteral(self: *BacktrackEngine, literal_data: ast.Node.NodeData, pos: usize) ?usize {
         if (pos >= self.input.len) return null;
 
+        const c = literal_data.literal.c;
+        const ignore_case = literal_data.literal.ignore_case;
         const input_char = self.input[pos];
-        const matches = if (self.flags.case_insensitive)
+        const matches = if (ignore_case)
             std.ascii.toLower(input_char) == std.ascii.toLower(c)
         else
             input_char == c;
@@ -176,11 +178,11 @@ pub const BacktrackEngine = struct {
         return if (matches) pos + 1 else null;
     }
 
-    fn matchAny(self: *BacktrackEngine, pos: usize) ?usize {
+    fn matchAny(self: *BacktrackEngine, any_data: ast.Node.NodeData, pos: usize) ?usize {
         if (pos >= self.input.len) return null;
 
         const c = self.input[pos];
-        if (!self.flags.dot_all and c == '\n') return null;
+        if (!any_data.any.dot_all and c == '\n') return null;
 
         return pos + 1;
     }
@@ -553,13 +555,15 @@ pub const BacktrackEngine = struct {
         return end_pos;
     }
 
-    fn matchAnchor(self: *BacktrackEngine, anchor_type: ast.AnchorType, pos: usize) ?usize {
+    fn matchAnchor(self: *BacktrackEngine, anchor_data: ast.Node.NodeData, pos: usize) ?usize {
+        const anchor_type = anchor_data.anchor.type;
+        const multiline = anchor_data.anchor.multiline;
         const matches = switch (anchor_type) {
-            .start_line => if (self.flags.multiline)
+            .start_line => if (multiline)
                 pos == 0 or (pos > 0 and self.input[pos - 1] == '\n')
             else
                 pos == 0,
-            .end_line => if (self.flags.multiline)
+            .end_line => if (multiline)
                 pos == self.input.len or (pos < self.input.len and self.input[pos] == '\n')
             else
                 pos == self.input.len,
@@ -686,7 +690,7 @@ test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
     const parser = @import("parser.zig");
     const compiler = @import("compiler.zig");
 
-    var p = try parser.Parser.init(allocator, "(a+)+b");
+    var p = try parser.Parser.init(allocator, "(a+)+b", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -720,7 +724,7 @@ test "backtrack: ReDoS protection - nested stars (a*)*b" {
     const parser = @import("parser.zig");
     const compiler = @import("compiler.zig");
 
-    var p = try parser.Parser.init(allocator, "(a*)*b");
+    var p = try parser.Parser.init(allocator, "(a*)*b", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -745,7 +749,7 @@ test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
     const parser = @import("parser.zig");
     const compiler = @import("compiler.zig");
 
-    var p = try parser.Parser.init(allocator, "(a|a)*b");
+    var p = try parser.Parser.init(allocator, "(a|a)*b", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -770,7 +774,7 @@ test "backtrack: configurable step limit" {
     const parser = @import("parser.zig");
     const compiler = @import("compiler.zig");
 
-    var p = try parser.Parser.init(allocator, "(a+)+b");
+    var p = try parser.Parser.init(allocator, "(a+)+b", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
@@ -801,7 +805,7 @@ test "backtrack: step counter increments" {
     const parser = @import("parser.zig");
     const compiler = @import("compiler.zig");
 
-    var p = try parser.Parser.init(allocator, "a+b+");
+    var p = try parser.Parser.init(allocator, "a+b+", .{});
     var tree = try p.parse();
     defer tree.deinit();
 
