@@ -98,6 +98,25 @@ pub const Lexer = struct {
             'n' => self.makeToken(.escape_char, '\n'),
             't' => self.makeToken(.escape_char, '\t'),
             'r' => self.makeToken(.escape_char, '\r'),
+            'x' => {
+                // Parse \xNN hex escape
+                const hex1 = self.advance() orelse return RegexError.UnexpectedEndOfPattern;
+                const hex2 = self.advance() orelse return RegexError.UnexpectedEndOfPattern;
+
+                if (!std.ascii.isHex(hex1) or !std.ascii.isHex(hex2)) {
+                    return RegexError.InvalidEscapeSequence;
+                }
+
+                const hex_str = [_]u8{ hex1, hex2 };
+                const value = std.fmt.parseInt(u8, &hex_str, 16) catch return RegexError.InvalidEscapeSequence;
+
+                // BSON/MongoDB compatibility: regex patterns cannot contain null bytes
+                if (value == 0) {
+                    return RegexError.InvalidPattern;
+                }
+
+                return self.makeToken(.literal, value);
+            },
             '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
                 // Backreference \1, \2, etc.
                 return self.makeToken(.backref, c - '0');
