@@ -927,7 +927,7 @@ pub const Parser = struct {
     /// Parse character class [...]
     fn parseCharClass(self: *Parser) !*ast.Node {
         const start = self.current_token.span.start;
-        try self.advance(); // consume [
+        try self.advance(); // consume '['
 
         var negated = false;
         if (self.peek() == .caret) {
@@ -935,49 +935,53 @@ pub const Parser = struct {
             try self.advance();
         }
 
-        var ranges: std.ArrayList(common.CharRange) = .empty;
+        var ranges = try std.ArrayList(common.CharRange).initCapacity(self.allocator, 0);
         defer ranges.deinit(self.allocator);
+
+        var unicode_property: ?common.CharClass.UnicodeProperty = null;
 
         while (self.peek() != .rbracket and self.peek() != .eof) {
             // Check for POSIX character class [:name:]
-            // We need to look ahead in the raw input, not the tokenized stream
-            const current_pos = self.lexer.pos;
+            // Check if current token is '[' followed by ':'
+            if (self.current_token.token_type == .lbracket) {
+                const next_pos = self.lexer.pos;
+                if (next_pos < self.lexer.input.len and
+                    self.lexer.input[next_pos] == ':')
+                {
+                    // Found potential POSIX class [[:
+                    var found_posix = false;
+                    var i = next_pos + 1;
+                    while (i + 1 < self.lexer.input.len) : (i += 1) {
+                        if (self.lexer.input[i] == ':' and self.lexer.input[i + 1] == ']') {
+                            // Found [:name:]
+                            const class_name = self.lexer.input[next_pos + 1 .. i];
 
-            if (current_pos + 1 < self.lexer.input.len and
-                self.lexer.input[current_pos] == '[' and
-                self.lexer.input[current_pos + 1] == ':')
-            {
+                            // Skip to after ':]'
+                            self.lexer.pos = i + 2;
+                            self.current_token = try self.lexer.next();
 
-                // Find the closing :]
-                var found_posix = false;
-                var i = current_pos + 2;
-                while (i + 1 < self.lexer.input.len) : (i += 1) {
-                    if (self.lexer.input[i] == ':' and self.lexer.input[i + 1] == ']') {
-                        // Found [:name:]
-                        const class_name = self.lexer.input[current_pos + 2 .. i];
+                            // Get the POSIX class
+                            const posix_class = try self.getPosixClass(class_name);
 
-                        // Skip to the character AFTER ':]' which should be the outer ']' or more chars
-                        // We want the lexer to be positioned so that the NEXT token read will be correct
-                        self.lexer.pos = i + 2; // Position after ':]'
-                        // Since we're in the middle of parseCharClass, manually get next token
-                        // This will be either ']' (end of class) or another character
-                        self.current_token = try self.lexer.next();
+                            // If POSIX class has unicode_property, store it
+                            if (posix_class.unicode_property) |prop| {
+                                unicode_property = prop;
+                            } else {
+                                // Otherwise, add the ranges
+                                for (posix_class.ranges) |range| {
+                                    try ranges.append(self.allocator, range);
+                                }
+                            }
 
-                        // Add the POSIX class ranges
-                        const posix_class = try self.getPosixClass(class_name);
-                        for (posix_class.ranges) |range| {
-                            try ranges.append(self.allocator, range);
+                            found_posix = true;
+                            break;
                         }
-                        found_posix = true;
-                        break;
+                    }
+
+                    if (found_posix) {
+                        continue;
                     }
                 }
-
-                if (found_posix) {
-                    continue; // Successfully parsed POSIX class, continue to next iteration
-                }
-
-                // Not a complete POSIX class, fall through to treat [ as literal
             }
 
             const first_char = self.getCharClassChar() orelse {
@@ -1019,7 +1023,7 @@ pub const Parser = struct {
         const char_class = common.CharClass{
             .ranges = try ranges.toOwnedSlice(self.allocator),
             .negated = negated,
-            .unicode_property = null,
+            .unicode_property = unicode_property,
         };
 
         const span = common.Span.init(start, self.current_token.span.end);

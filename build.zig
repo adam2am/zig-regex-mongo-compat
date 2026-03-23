@@ -377,6 +377,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_debug_unicode_tests = b.addRunArtifact(debug_unicode_tests);
 
+    const debug_posix_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_posix_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_debug_posix_tests = b.addRunArtifact(debug_posix_tests);
+
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -416,6 +428,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unicode_property_tests.step);
     test_step.dependOn(&run_unicode_functions_tests.step);
     test_step.dependOn(&run_debug_unicode_tests.step);
+    test_step.dependOn(&run_debug_posix_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;
@@ -655,4 +668,7 @@ pub fn build(b: *std.Build) void {
 
     const test_debug_unicode_step = b.step("test-debug-unicode", "Run debug_unicode tests");
     test_debug_unicode_step.dependOn(&run_debug_unicode_tests.step);
+
+    const test_debug_posix_step = b.step("test-debug-posix", "Run debug_posix tests");
+    test_debug_posix_step.dependOn(&run_debug_posix_tests.step);
 }

@@ -33,7 +33,15 @@ pub fn main() !void {
 
         std.debug.print("\nOptimization Info:\n", .{});
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Literal prefix: \"{s}\"\n", .{prefix});
+            // Convert u21 array to UTF-8 for printing
+            var buf: [1024]u8 = undefined;
+            var fbs = std.io.fixedBufferStream(&buf);
+            for (prefix) |codepoint| {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch continue;
+                fbs.writer().writeAll(utf8_buf[0..len]) catch continue;
+            }
+            std.debug.print("  ✓ Literal prefix: \"{s}\"\n", .{fbs.getWritten()});
         } else {
             std.debug.print("  ✗ No literal prefix\n", .{});
         }

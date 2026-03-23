@@ -1,6 +1,17 @@
 const std = @import("std");
 const Regex = @import("regex").Regex;
 
+fn printPrefix(prefix: []const u21) void {
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    for (prefix) |codepoint| {
+        var utf8_buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch continue;
+        fbs.writer().writeAll(utf8_buf[0..len]) catch continue;
+    }
+    std.debug.print("  ✓ Using literal prefix: \"{s}\"\n", .{fbs.getWritten()});
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -18,7 +29,7 @@ pub fn main() !void {
         defer regex.deinit();
 
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Using literal prefix: \"{s}\"\n", .{prefix});
+            printPrefix(prefix);
         } else {
             std.debug.print("  ✗ No literal prefix found\n", .{});
         }
@@ -42,7 +53,7 @@ pub fn main() !void {
         defer regex.deinit();
 
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Using literal prefix: \"{s}\"\n", .{prefix});
+            printPrefix(prefix);
         } else {
             std.debug.print("  ✗ No literal prefix found (slower performance expected)\n", .{});
         }
@@ -67,7 +78,7 @@ pub fn main() !void {
         defer regex.deinit();
 
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Using literal prefix: \"{s}\"\n", .{prefix});
+            printPrefix(prefix);
         } else {
             std.debug.print("  ✗ No literal prefix found\n", .{});
         }
@@ -94,7 +105,7 @@ pub fn main() !void {
             std.debug.print("  ✓ Pattern is start-anchored\n", .{});
         }
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Using literal prefix: \"{s}\"\n", .{prefix});
+            printPrefix(prefix);
         }
 
         const text = "hello world";
@@ -115,7 +126,14 @@ pub fn main() !void {
         defer regex.deinit();
 
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Using literal prefix: \"{s}\" (min_len={d})\n", .{ prefix, regex.opt_info.min_length });
+            var buf: [1024]u8 = undefined;
+            var fbs = std.io.fixedBufferStream(&buf);
+            for (prefix) |codepoint| {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch continue;
+                fbs.writer().writeAll(utf8_buf[0..len]) catch continue;
+            }
+            std.debug.print("  ✓ Using literal prefix: \"{s}\" (min_len={d})\n", .{ fbs.getWritten(), regex.opt_info.min_length });
         }
 
         const iterations: usize = 10000;
