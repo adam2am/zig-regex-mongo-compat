@@ -293,6 +293,30 @@ pub fn build(b: *std.Build) void {
     });
     const run_inline_modifiers_tests = b.addRunArtifact(inline_modifiers_tests);
 
+    const debug_inline_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_inline.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_debug_inline_tests = b.addRunArtifact(debug_inline_tests);
+
+    const test_recursion_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_recursion.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_test_recursion_tests = b.addRunArtifact(test_recursion_tests);
+
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -325,6 +349,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_multiline_dotall_tests.step);
     test_step.dependOn(&run_named_captures_tests.step);
     test_step.dependOn(&run_inline_modifiers_tests.step);
+    test_step.dependOn(&run_debug_inline_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;
@@ -542,4 +567,10 @@ pub fn build(b: *std.Build) void {
     const advanced_example_run = b.addRunArtifact(advanced_example);
     const advanced_example_step = b.step("advanced-example", "Run advanced features examples");
     advanced_example_step.dependOn(&advanced_example_run.step);
+
+    const test_debug_inline_step = b.step("test-debug-inline", "Run debug_inline tests");
+    test_debug_inline_step.dependOn(&run_debug_inline_tests.step);
+
+    const test_recursion_step = b.step("test-recursion", "Run test_recursion tests");
+    test_recursion_step.dependOn(&run_test_recursion_tests.step);
 }
