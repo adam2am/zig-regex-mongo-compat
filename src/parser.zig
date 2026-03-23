@@ -117,6 +117,11 @@ pub const Lexer = struct {
 
                 return self.makeToken(.literal, value);
             },
+            'p', 'P' => {
+                // TODO: Remove this error when implementing full Unicode support
+                // Unicode properties: \p{Latin}, \p{Hangul}, etc.
+                return RegexError.UnicodeNotSupported;
+            },
             '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
                 // Backreference \1, \2, etc.
                 return self.makeToken(.backref, c - '0');
@@ -150,6 +155,18 @@ pub const Lexer = struct {
             return self.makeToken(.eof, 0);
         };
 
+        // TODO: Remove this check when implementing full Unicode support
+        // Detect and reject PCRE verbs: (*UTF), (*UCP), (*FAIL), etc.
+        if (c == '(' and self.peek() == '*') {
+            _ = self.advance(); // consume *
+            // Consume until )
+            while (self.peek()) |next_c| {
+                _ = self.advance();
+                if (next_c == ')') break;
+            }
+            return RegexError.PCREVerbsNotSupported;
+        }
+
         return switch (c) {
             '.' => self.makeToken(.dot, 0),
             '*' => self.makeToken(.star, 0),
@@ -182,10 +199,15 @@ pub const Parser = struct {
     current_token: Token,
     capture_count: usize,
     nesting_depth: usize,
+    recursion_depth: usize,
     flag_stack: std.ArrayList(common.CompileFlags),
 
     /// Maximum nesting depth to prevent stack overflow from patterns like (((((...
     pub const MAX_NESTING_DEPTH: usize = 100;
+
+    /// Maximum recursion depth to prevent stack overflow on large patterns
+    /// Matches documentdb-main's PCRE2_RECURSION_LIMIT
+    pub const MAX_RECURSION_DEPTH: usize = 4001;
 
     pub fn init(allocator: std.mem.Allocator, pattern: []const u8, flags: common.CompileFlags) !Parser {
         var lexer = Lexer.init(pattern, flags);
@@ -200,6 +222,7 @@ pub const Parser = struct {
             .current_token = first_token,
             .capture_count = 0,
             .nesting_depth = 0,
+            .recursion_depth = 0,
             .flag_stack = flag_stack,
         };
     }
@@ -246,22 +269,45 @@ pub const Parser = struct {
 
     /// Parse alternation (lowest precedence)
     fn parseAlternation(self: *Parser) !*ast.Node {
-        var left = try self.parseConcat();
-        errdefer left.destroy(self.allocator);
+        // Track recursion depth to prevent stack overflow
+        self.recursion_depth += 1;
+        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
+            return RegexError.RecursionLimitExceeded;
+        }
+        defer self.recursion_depth -= 1;
 
-        while (self.peek() == .pipe) {
-            const start = self.current_token.span.start;
-            try self.advance(); // consume |
-            const right = try self.parseConcat();
-            const span = common.Span.init(start, self.current_token.span.end);
-            left = try ast.Node.createAlternation(self.allocator, left, right, span);
+        var nodes: std.ArrayList(*ast.Node) = .empty;
+        defer nodes.deinit(self.allocator);
+        errdefer {
+            for (nodes.items) |n| n.destroy(self.allocator);
         }
 
-        return left;
+        const first = try self.parseConcat();
+        try nodes.append(self.allocator, first);
+
+        while (self.peek() == .pipe) {
+            try self.advance(); // consume |
+            const right = try self.parseConcat();
+            try nodes.append(self.allocator, right);
+        }
+
+        if (nodes.items.len == 1) {
+            return nodes.items[0];
+        }
+
+        // Build balanced binary tree to prevent stack overflow
+        return self.buildBalancedTree(nodes.items, ast.Node.createAlternation);
     }
 
     /// Parse concatenation
     fn parseConcat(self: *Parser) !*ast.Node {
+        // Track recursion depth to prevent stack overflow
+        self.recursion_depth += 1;
+        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
+            return RegexError.RecursionLimitExceeded;
+        }
+        defer self.recursion_depth -= 1;
+
         var nodes: std.ArrayList(*ast.Node) = .empty;
         defer nodes.deinit(self.allocator);
         errdefer {
@@ -288,21 +334,19 @@ pub const Parser = struct {
             return nodes.items[0];
         }
 
-        // Build right-associative concatenation tree
-        var result = nodes.items[nodes.items.len - 1];
-        var i = nodes.items.len - 1;
-        while (i > 0) {
-            i -= 1;
-            const left = nodes.items[i];
-            const span = common.Span.init(left.span.start, result.span.end);
-            result = try ast.Node.createConcat(self.allocator, left, result, span);
-        }
-
-        return result;
+        // Build balanced binary tree to prevent stack overflow (O(log N) depth instead of O(N))
+        return self.buildBalancedTree(nodes.items, ast.Node.createConcat);
     }
 
     /// Parse repetition operators (*, +, ?, {m,n})
     fn parseRepeat(self: *Parser) !*ast.Node {
+        // Track recursion depth to prevent stack overflow
+        self.recursion_depth += 1;
+        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
+            return RegexError.RecursionLimitExceeded;
+        }
+        defer self.recursion_depth -= 1;
+
         var node = try self.parsePrimary();
         errdefer node.destroy(self.allocator);
         const start = node.span.start;
@@ -415,6 +459,13 @@ pub const Parser = struct {
 
     /// Parse primary expressions (literals, groups, character classes)
     fn parsePrimary(self: *Parser) RegexError!*ast.Node {
+        // Track recursion depth to prevent stack overflow
+        self.recursion_depth += 1;
+        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
+            return RegexError.RecursionLimitExceeded;
+        }
+        defer self.recursion_depth -= 1;
+
         const token = self.current_token;
         const span = token.span;
 
@@ -874,6 +925,27 @@ pub const Parser = struct {
 
         const span = common.Span.init(start, self.current_token.span.end);
         return ast.Node.createCharClass(self.allocator, char_class, self.currentFlags().case_insensitive, span);
+    }
+
+    /// Builds a balanced binary tree from a flat list of nodes to prevent stack overflow
+    /// Reduces recursion depth from O(N) to O(log N)
+    fn buildBalancedTree(
+        self: *Parser,
+        nodes: []*ast.Node,
+        comptime createFn: fn (std.mem.Allocator, *ast.Node, *ast.Node, common.Span) RegexError!*ast.Node,
+    ) RegexError!*ast.Node {
+        if (nodes.len == 0) return error.InvalidPattern;
+        if (nodes.len == 1) return nodes[0];
+
+        const mid = nodes.len / 2;
+        const left = try self.buildBalancedTree(nodes[0..mid], createFn);
+        errdefer left.destroy(self.allocator);
+
+        const right = try self.buildBalancedTree(nodes[mid..], createFn);
+        errdefer right.destroy(self.allocator);
+
+        const span = common.Span.init(left.span.start, right.span.end);
+        return createFn(self.allocator, left, right, span);
     }
 };
 

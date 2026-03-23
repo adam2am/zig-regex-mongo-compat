@@ -28,6 +28,11 @@ pub const RegexError = error{
     TooManyAlternations,
     PatternTooComplex,
     StackOverflow,
+    RecursionLimitExceeded,
+
+    // Feature support errors (TODO: Remove when implementing full Unicode support)
+    UnicodeNotSupported,
+    PCREVerbsNotSupported,
 
     // Runtime errors
     MatchFailed,
