@@ -7,8 +7,11 @@ pub const Script = enum {
     Latin,
     Greek,
     Cyrillic,
-    // TODO: Add ranges for additional scripts as needed:
-    // Arabic, Hebrew, Han, Hiragana, Katakana, etc.
+    Arabic,
+    Hebrew,
+    Han,
+    Hiragana,
+    Katakana,
 };
 
 /// Character ranges for each script (from Unicode Character Database)
@@ -94,11 +97,95 @@ const CYRILLIC_RANGES = [_]struct { u21, u21 }{
     .{ 0xFE2E, 0xFE2F }, // ︮-︯
 };
 
+const ARABIC_RANGES = [_]struct { u21, u21 }{
+    .{ 0x0600, 0x0604 }, // ؀-؄
+    .{ 0x0606, 0x060B }, // ؆-؋
+    .{ 0x060D, 0x061A }, // ؍-ؚ
+    .{ 0x061C, 0x061C }, // ؜
+    .{ 0x061E, 0x061E }, // ؞
+    .{ 0x0620, 0x063F }, // ؠ-ؿ
+    .{ 0x0641, 0x064A }, // ف-ي
+    .{ 0x0656, 0x066F }, // ٖ-ٯ
+    .{ 0x0671, 0x06DC }, // ٱ-ۜ
+    .{ 0x06DE, 0x06FF }, // ۞-ۿ
+    .{ 0x0750, 0x077F }, // ݐ-ݿ
+    .{ 0x0870, 0x088E }, // ࡰ-ࢎ
+    .{ 0x0890, 0x0891 }, // ࢐-࢑
+    .{ 0x0898, 0x08E1 }, // ࢘-࣡
+    .{ 0x08E3, 0x08FF }, // ࣣ-ࣿ
+    .{ 0xFB50, 0xFBC2 }, // ﭐ-﯂
+    .{ 0xFBD3, 0xFD3D }, // ﯓ-ﴽ
+    .{ 0xFD40, 0xFD8F }, // ﵀-ﶏ
+    .{ 0xFD92, 0xFDC7 }, // ﶒ-ﷇ
+    .{ 0xFDCF, 0xFDCF }, // ﷏
+    .{ 0xFDF0, 0xFDFF }, // ﷰ-﷿
+    .{ 0xFE70, 0xFE74 }, // ﹰ-ﹴ
+    .{ 0xFE76, 0xFEFC }, // ﹶ-ﻼ
+};
+
+const HEBREW_RANGES = [_]struct { u21, u21 }{
+    .{ 0x0591, 0x05C7 }, // ֑-ׇ
+    .{ 0x05D0, 0x05EA }, // א-ת
+    .{ 0x05EF, 0x05F4 }, // ׯ-״
+    .{ 0xFB1D, 0xFB36 }, // יִ-זּ
+    .{ 0xFB38, 0xFB3C }, // טּ-לּ
+    .{ 0xFB3E, 0xFB3E }, // מּ
+    .{ 0xFB40, 0xFB41 }, // נּ-סּ
+    .{ 0xFB43, 0xFB44 }, // ףּ-פּ
+    .{ 0xFB46, 0xFB4F }, // צּ-ﭏ
+};
+
+const HAN_RANGES = [_]struct { u21, u21 }{
+    .{ 0x2E80, 0x2E99 }, // ⺀-⺙
+    .{ 0x2E9B, 0x2EF3 }, // ⺛-⻳
+    .{ 0x2F00, 0x2FD5 }, // ⼀-⿕
+    .{ 0x3005, 0x3005 }, // 々
+    .{ 0x3007, 0x3007 }, // 〇
+    .{ 0x3021, 0x3029 }, // 〡-〩
+    .{ 0x3038, 0x303A }, // 〸-〺
+    .{ 0x303B, 0x303B }, // 〻
+    .{ 0x3400, 0x4DBF }, // 㐀-䶿 (CJK Unified Ideographs Extension A)
+    .{ 0x4E00, 0x9FFF }, // 一-鿿 (CJK Unified Ideographs)
+    .{ 0xF900, 0xFA6D }, // 豈-頻 (CJK Compatibility Ideographs)
+    .{ 0xFA70, 0xFAD9 }, // 並-龎
+    .{ 0x20000, 0x2A6DF }, // 𠀀-𪛟 (Extension B)
+    .{ 0x2A700, 0x2B739 }, // 𪜀-𫜹 (Extension C)
+    .{ 0x2B740, 0x2B81D }, // 𫝀-𫠝 (Extension D)
+    .{ 0x2B820, 0x2CEA1 }, // 𫠠-𬺡 (Extension E)
+    .{ 0x2CEB0, 0x2EBE0 }, // 𬺰-𮯠 (Extension F)
+    .{ 0x2F800, 0x2FA1D }, // 丽-𪘀 (Compatibility Ideographs Supplement)
+    .{ 0x30000, 0x3134A }, // 𰀀-𱍊 (Extension G)
+};
+
+const HIRAGANA_RANGES = [_]struct { u21, u21 }{
+    .{ 0x3041, 0x3096 }, // ぁ-ゖ
+    .{ 0x309D, 0x309F }, // ゝ-ゟ
+    .{ 0x1B001, 0x1B11F }, // 𛀁-𛄟 (Kana Supplement)
+    .{ 0x1B132, 0x1B132 }, // 𛄲
+    .{ 0x1B150, 0x1B152 }, // 𛅐-𛅒 (Small Kana Extension)
+    .{ 0x1F200, 0x1F200 }, // 🈀
+};
+
+const KATAKANA_RANGES = [_]struct { u21, u21 }{
+    .{ 0x30A1, 0x30FA }, // ァ-ヺ
+    .{ 0x30FD, 0x30FF }, // ヽ-ヿ
+    .{ 0x31F0, 0x31FF }, // ㇰ-ㇿ (Katakana Phonetic Extensions)
+    .{ 0x32D0, 0x32FE }, // ㋐-㋾ (Katakana in circles)
+    .{ 0x3300, 0x3357 }, // ㌀-㍗ (Katakana combinations)
+    .{ 0x1B000, 0x1B000 }, // 𛀀 (Kana Supplement)
+    .{ 0x1B164, 0x1B167 }, // 𛅤-𛅧 (Small Katakana Extension)
+};
+
 /// Compile-time map from script name to Script enum
 pub const SCRIPT_BY_NAME = std.StaticStringMap(Script).initComptime(.{
     .{ "Latin", .Latin },
     .{ "Greek", .Greek },
     .{ "Cyrillic", .Cyrillic },
+    .{ "Arabic", .Arabic },
+    .{ "Hebrew", .Hebrew },
+    .{ "Han", .Han },
+    .{ "Hiragana", .Hiragana },
+    .{ "Katakana", .Katakana },
 });
 
 /// Check if a codepoint belongs to a specific script
@@ -108,6 +195,11 @@ pub fn matchesScript(cp: u21, script: Script) bool {
         .Latin => &LATIN_RANGES,
         .Greek => &GREEK_RANGES,
         .Cyrillic => &CYRILLIC_RANGES,
+        .Arabic => &ARABIC_RANGES,
+        .Hebrew => &HEBREW_RANGES,
+        .Han => &HAN_RANGES,
+        .Hiragana => &HIRAGANA_RANGES,
+        .Katakana => &KATAKANA_RANGES,
         // Exhaustive switch - compiler will error if enum values added without ranges
     };
 
