@@ -54,7 +54,7 @@ pub fn main() !void {
 
         // Example 2: Pattern analysis
         {
-            var parser = Parser.init(allocator, pattern) catch continue;
+            var parser = Parser.init(allocator, pattern, .{}) catch continue;
             var tree = parser.parse() catch continue;
             defer tree.deinit();
 

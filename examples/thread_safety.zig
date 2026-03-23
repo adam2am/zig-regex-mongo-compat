@@ -149,8 +149,6 @@ pub fn main() !void {
 
         const Worker = struct {
             fn run(r: *const Regex) usize {
-                var timer = std.time.Timer.start() catch return 0;
-
                 var count: usize = 0;
                 var i: usize = 0;
                 while (i < 10000) : (i += 1) {
@@ -158,46 +156,41 @@ pub fn main() !void {
                         if (matches) count += 1;
                     } else |_| {}
                 }
-
-                const elapsed_ms = timer.read() / 1_000_000;
-                return elapsed_ms;
+                return count;
             }
         };
 
         // Sequential baseline
-        const sequential_time = Worker.run(&regex);
-        std.debug.print("Sequential: 10,000 matches in {d}ms\n", .{sequential_time});
+        const sequential_count = Worker.run(&regex);
+        std.debug.print("Sequential: {d} matches\n", .{sequential_count});
 
         // Parallel execution
         const thread_count = 4;
         var threads: [thread_count]std.Thread = undefined;
-        var times: [thread_count]usize = undefined;
+        var counts: [thread_count]usize = undefined;
 
         const ParallelWorker = struct {
-            fn run(r: *const Regex, time_ptr: *usize) void {
-                time_ptr.* = Worker.run(r);
+            fn run(r: *const Regex, count_ptr: *usize) void {
+                count_ptr.* = Worker.run(r);
             }
         };
 
-        var parallel_timer = try std.time.Timer.start();
-
         for (&threads, 0..) |*thread, i| {
-            thread.* = try std.Thread.spawn(.{}, ParallelWorker.run, .{ &regex, &times[i] });
+            thread.* = try std.Thread.spawn(.{}, ParallelWorker.run, .{ &regex, &counts[i] });
         }
 
         for (threads) |thread| {
             thread.join();
         }
 
-        const total_parallel = parallel_timer.read() / 1_000_000;
-
-        std.debug.print("Parallel ({d} threads): 40,000 matches in {d}ms\n", .{ thread_count, total_parallel });
-        std.debug.print("Individual thread times: ", .{});
-        for (times, 0..) |time, i| {
-            std.debug.print("{d}ms", .{time});
-            if (i < times.len - 1) std.debug.print(", ", .{});
+        var total_matches: usize = 0;
+        std.debug.print("Parallel ({d} threads): ", .{thread_count});
+        for (counts, 0..) |count, i| {
+            total_matches += count;
+            std.debug.print("{d} matches", .{count});
+            if (i < counts.len - 1) std.debug.print(", ", .{});
         }
-        std.debug.print("\n\n", .{});
+        std.debug.print(" (total: {d})\n\n", .{total_matches});
     }
 
     // Example 5: Multiple patterns, multiple threads
