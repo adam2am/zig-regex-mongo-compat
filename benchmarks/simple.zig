@@ -14,22 +14,13 @@ pub fn main() !void {
         var regex = try Regex.compile(allocator, "hello");
         defer regex.deinit();
 
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
         const iterations: usize = 10000;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = try regex.isMatch("hello world");
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     // Test 2: Quantifiers
@@ -38,22 +29,13 @@ pub fn main() !void {
         var regex = try Regex.compile(allocator, "a+");
         defer regex.deinit();
 
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
         const iterations: usize = 10000;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = try regex.isMatch("aaaa");
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     // Test 3: Character classes
@@ -62,22 +44,13 @@ pub fn main() !void {
         var regex = try Regex.compile(allocator, "\\d+");
         defer regex.deinit();
 
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
         const iterations: usize = 10000;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = try regex.isMatch("12345");
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     // Test 4: Case-insensitive
@@ -86,22 +59,13 @@ pub fn main() !void {
         var regex = try Regex.compileWithFlags(allocator, "hello", .{ .case_insensitive = true });
         defer regex.deinit();
 
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
         const iterations: usize = 10000;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = try regex.isMatch("HELLO");
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     std.debug.print("=== Benchmarks Complete ===\n", .{});

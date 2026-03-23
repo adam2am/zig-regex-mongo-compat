@@ -17,15 +17,11 @@ pub fn main() !void {
         var regex = try Regex.compile(allocator, "FOUND_IT!");
         defer regex.deinit();
 
-        // Print optimization info
         if (regex.opt_info.literal_prefix) |prefix| {
             std.debug.print("  ✓ Using literal prefix: \"{s}\"\n", .{prefix});
         } else {
             std.debug.print("  ✗ No literal prefix found\n", .{});
         }
-
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
 
         const iterations: usize = 10000;
         var i: usize = 0;
@@ -36,16 +32,10 @@ pub fn main() !void {
             }
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
-    // Test 2: Pattern without useful prefix (no optimization) - using fewer iterations
+    // Test 2: Pattern without useful prefix (no optimization)
     {
         std.debug.print("Test 2: No prefix optimization (.*FOUND)...\n", .{});
         var regex = try Regex.compile(allocator, ".*FOUND");
@@ -57,10 +47,6 @@ pub fn main() !void {
             std.debug.print("  ✗ No literal prefix found (slower performance expected)\n", .{});
         }
 
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
-        // Use fewer iterations since this is much slower without optimization
         const iterations: usize = 100;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
@@ -70,13 +56,7 @@ pub fn main() !void {
             }
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     // Test 3: Pattern with prefix that allows skipping ahead
@@ -92,9 +72,6 @@ pub fn main() !void {
             std.debug.print("  ✗ No literal prefix found\n", .{});
         }
 
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
         const iterations: usize = 10000;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
@@ -104,13 +81,7 @@ pub fn main() !void {
             }
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     // Test 4: Anchored patterns
@@ -127,22 +98,13 @@ pub fn main() !void {
         }
 
         const text = "hello world";
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
-
         const iterations: usize = 10000;
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = try regex.isMatch(text);
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     // Test 5: Email-like pattern with literal prefix
@@ -153,11 +115,8 @@ pub fn main() !void {
         defer regex.deinit();
 
         if (regex.opt_info.literal_prefix) |prefix| {
-            std.debug.print("  ✓ Using literal prefix: \"{s}\" (min_len={d})\n", .{prefix, regex.opt_info.min_length});
+            std.debug.print("  ✓ Using literal prefix: \"{s}\" (min_len={d})\n", .{ prefix, regex.opt_info.min_length });
         }
-
-        var timer = try std.time.Timer.start();
-        const start = timer.read();
 
         const iterations: usize = 10000;
         var i: usize = 0;
@@ -168,13 +127,7 @@ pub fn main() !void {
             }
         }
 
-        const elapsed = timer.read() - start;
-        const avg_ns = elapsed / iterations;
-        std.debug.print("  {d} iterations in {d:.2}ms ({d:.2}µs/op)\n\n", .{
-            iterations,
-            @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-            @as(f64, @floatFromInt(avg_ns)) / 1000.0,
-        });
+        std.debug.print("  {d} iterations completed\n\n", .{iterations});
     }
 
     std.debug.print("=== Benchmarks Complete ===\n", .{});
