@@ -1,11 +1,12 @@
 const std = @import("std");
+const Timer = @import("timer.zig").Timer;
 
 /// Performance profiling and metrics tracking for regex operations
 pub const Profiler = struct {
     allocator: std.mem.Allocator,
     enabled: bool,
     metrics: Metrics,
-    start_time: ?std.time.Instant,
+    start_time: ?i64,
 
     pub const Metrics = struct {
         compilation_time_ns: u64 = 0,
@@ -54,36 +55,36 @@ pub const Profiler = struct {
             .allocator = allocator,
             .enabled = enabled,
             .metrics = Metrics{},
-            .start_time = if (enabled) std.time.Instant.now() catch null else null,
+            .start_time = if (enabled) Timer.timestamp() catch null else null,
         };
     }
 
     /// Start timing a compilation phase
     pub fn startCompilation(self: *Profiler) void {
         if (!self.enabled) return;
-        self.start_time = std.time.Instant.now() catch null;
+        self.start_time = Timer.timestamp() catch null;
     }
 
     /// End timing a compilation phase
     pub fn endCompilation(self: *Profiler) void {
         if (!self.enabled) return;
         const start = self.start_time orelse return;
-        const now = std.time.Instant.now() catch return;
-        self.metrics.compilation_time_ns += now.since(start);
+        const now = Timer.timestamp() catch return;
+        self.metrics.compilation_time_ns += @intCast(now - start);
     }
 
     /// Start timing a match operation
     pub fn startMatch(self: *Profiler) void {
         if (!self.enabled) return;
-        self.start_time = std.time.Instant.now() catch null;
+        self.start_time = Timer.timestamp() catch null;
     }
 
     /// End timing a match operation
     pub fn endMatch(self: *Profiler) void {
         if (!self.enabled) return;
         const start = self.start_time orelse return;
-        const now = std.time.Instant.now() catch return;
-        self.metrics.match_time_ns += now.since(start);
+        const now = Timer.timestamp() catch return;
+        self.metrics.match_time_ns += @intCast(now - start);
         self.metrics.match_count += 1;
     }
 
@@ -142,7 +143,7 @@ pub const Profiler = struct {
     /// Reset all metrics
     pub fn reset(self: *Profiler) void {
         self.metrics.reset();
-        self.start_time = if (self.enabled) std.time.Instant.now() catch null else null;
+        self.start_time = if (self.enabled) Timer.timestamp() catch null else null;
     }
 
     /// Print metrics to stderr
@@ -156,7 +157,7 @@ pub const Profiler = struct {
 pub const ScopedTimer = struct {
     profiler: *Profiler,
     timer_type: TimerType,
-    start: ?std.time.Instant,
+    start: ?i64,
 
     pub const TimerType = enum {
         compilation,
@@ -167,15 +168,15 @@ pub const ScopedTimer = struct {
         return .{
             .profiler = profiler,
             .timer_type = timer_type,
-            .start = if (profiler.enabled) std.time.Instant.now() catch null else null,
+            .start = if (profiler.enabled) Timer.timestamp() catch null else null,
         };
     }
 
     pub fn deinit(self: *ScopedTimer) void {
         if (!self.profiler.enabled) return;
         const start = self.start orelse return;
-        const now = std.time.Instant.now() catch return;
-        const elapsed = now.since(start);
+        const now = Timer.timestamp() catch return;
+        const elapsed: u64 = @intCast(now - start);
         switch (self.timer_type) {
             .compilation => self.profiler.metrics.compilation_time_ns += elapsed,
             .match => {
