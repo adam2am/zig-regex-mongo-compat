@@ -53,6 +53,7 @@ pub const Lexer = struct {
     pos: usize,
     start_pos: usize,
     flags: common.CompileFlags,
+    literal_mode: bool = false,
 
     pub fn init(input: []const u8, flags: common.CompileFlags) Lexer {
         return .{
@@ -138,6 +139,29 @@ pub const Lexer = struct {
                 // Parser will handle the {Name} part
                 return self.makeToken(if (c == 'P') .escape_P else .escape_p, 0);
             },
+            'Q' => {
+                // Start literal sequence - treat everything as literal until \E
+                self.literal_mode = true;
+                // Skip \Q by advancing past it and returning next character as literal
+                const next_c = self.advance() orelse return self.makeToken(.eof, 0);
+                return self.makeToken(.literal, next_c);
+            },
+            'E' => {
+                // \E only valid inside \Q...\E literal sequence
+                if (!self.literal_mode) {
+                    // Outside literal mode, \E is just literal 'E'
+                    return self.makeToken(.literal, 'E');
+                }
+                // End literal sequence
+                self.literal_mode = false;
+                // Skip \E by advancing past it and returning next character
+                const next_c = self.advance() orelse return self.makeToken(.eof, 0);
+                // Process next character normally (not in literal mode anymore)
+                if (next_c == '\\') {
+                    return try self.parseEscape();
+                }
+                return self.makeToken(.literal, next_c);
+            },
             '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
                 // Backreference \1, \2, etc.
                 return self.makeToken(.backref, c - '0');
@@ -170,6 +194,21 @@ pub const Lexer = struct {
         const c = self.advance() orelse {
             return self.makeToken(.eof, 0);
         };
+
+        // In literal mode, treat everything as literal except \E
+        if (self.literal_mode) {
+            if (c == '\\') {
+                const next_c = self.peek();
+                if (next_c == 'E') {
+                    // Let parseEscape handle \E to exit literal mode
+                    return try self.parseEscape();
+                }
+                // In literal mode, backslash is literal
+                return self.makeToken(.literal, c);
+            }
+            // Everything else is literal in literal mode
+            return self.makeToken(.literal, c);
+        }
 
         // Parse PCRE verbs: (*UTF), (*UCP), etc.
         if (c == '(' and self.peek() == '*') {
@@ -932,20 +971,7 @@ pub const Parser = struct {
         const byte_value: u8 = switch (self.current_token.token_type) {
             .literal => self.current_token.value,
             .escape_char => self.current_token.value,
-            // Inside character class, special chars are treated as literals
-            .dot => '.',
-            .star => '*',
-            .plus => '+',
-            .question => '?',
-            .pipe => '|',
-            .lparen => '(',
-            .rparen => ')',
-            .lbrace => '{',
-            .rbrace => '}',
-            .dollar => '$',
-            .lbracket => '[', // Allow [ as literal (for non-POSIX cases)
-            // These should not appear here
-            .rbracket, .caret, .backslash, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .escape_p, .escape_P, .backref, .pcre_ucp, .pcre_utf, .eof => return null,
+            else => return null,
         };
 
         // For ASCII characters (< 128), return as-is
