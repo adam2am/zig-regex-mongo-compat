@@ -1,11 +1,12 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const common = @import("common.zig");
 
 /// Optimization information extracted from a pattern
 pub const OptimizationInfo = struct {
     /// Literal prefix that must appear for the pattern to match
     /// This allows skipping ahead in the input using memchr/indexOf
-    literal_prefix: ?[]const u8 = null,
+    literal_prefix: ?[]const common.Char = null,
 
     /// Whether the pattern is anchored at start (^)
     anchored_start: bool = false,
@@ -70,8 +71,8 @@ pub const Optimizer = struct {
 
     /// Try to extract a literal prefix from the pattern
     /// Returns null if no useful prefix can be extracted
-    fn extractLiteralPrefix(self: *Optimizer, node: *ast.Node) !?[]const u8 {
-        var prefix = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+    fn extractLiteralPrefix(self: *Optimizer, node: *ast.Node) !?[]const common.Char {
+        var prefix = try std.ArrayList(common.Char).initCapacity(self.allocator, 0);
         errdefer prefix.deinit(self.allocator);
 
         _ = try self.collectLiteralPrefix(node, &prefix);
@@ -86,7 +87,7 @@ pub const Optimizer = struct {
     }
 
     /// Recursively collect literal characters from the start of the pattern
-    fn collectLiteralPrefix(self: *Optimizer, node: *ast.Node, prefix: *std.ArrayList(u8)) !bool {
+    fn collectLiteralPrefix(self: *Optimizer, node: *ast.Node, prefix: *std.ArrayList(common.Char)) !bool {
         return switch (node.node_type) {
             .literal => {
                 try prefix.append(self.allocator, node.data.literal.c);

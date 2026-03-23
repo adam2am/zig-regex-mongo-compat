@@ -252,7 +252,15 @@ pub const Visualizer = struct {
 
         // Literal prefix
         if (opt_info.literal_prefix) |prefix| {
-            try self.writer.print("{s} Literal prefix: \"{s}\"\n", .{ check, prefix });
+            // Convert u21 array to UTF-8 for printing
+            var buf: [1024]u8 = undefined;
+            var fbs = std.io.fixedBufferStream(&buf);
+            for (prefix) |codepoint| {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch continue;
+                fbs.writer().writeAll(utf8_buf[0..len]) catch continue;
+            }
+            try self.writer.print("{s} Literal prefix: \"{s}\"\n", .{ check, fbs.getWritten() });
         } else {
             try self.writer.print("{s} No literal prefix\n", .{cross});
         }

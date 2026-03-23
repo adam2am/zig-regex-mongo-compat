@@ -76,6 +76,9 @@ pub const Regex = struct {
         var tree = try p.parse();
         errdefer tree.deinit(); // Free AST if compilation fails
 
+        // Get the final flags from the parser (may have been modified by (*UCP), (*UTF), etc.)
+        const final_flags = p.currentFlags();
+
         // REMOVED: Static ReDoS analysis - Thompson NFA is immune to ReDoS
         // Runtime step counter (already in backtrack.zig) provides real protection
         // const pattern_analyzer = @import("pattern_analyzer.zig");
@@ -100,7 +103,7 @@ pub const Regex = struct {
 
         if (needs_backtracking) {
             // Use backtracking engine
-            var backtrack_engine = try backtrack.BacktrackEngine.init(allocator, tree.root, tree.capture_count, flags);
+            var backtrack_engine = try backtrack.BacktrackEngine.init(allocator, tree.root, tree.capture_count, final_flags);
             errdefer backtrack_engine.deinit();
 
             // Create a dummy NFA (not used)
@@ -116,7 +119,7 @@ pub const Regex = struct {
                 .ast_tree = tree, // Keep AST for backtracking
                 .engine_type = .backtracking,
                 .capture_count = tree.capture_count,
-                .flags = flags,
+                .flags = final_flags,
                 .opt_info = opt_info,
                 .named_captures = named_captures,
             };
@@ -136,7 +139,7 @@ pub const Regex = struct {
                 .ast_tree = null,
                 .engine_type = .thompson_nfa,
                 .capture_count = tree.capture_count,
-                .flags = flags,
+                .flags = final_flags,
                 .opt_info = opt_info,
                 .named_captures = named_captures,
             };

@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const common = @import("common.zig");
+const unicode_tables = @import("unicode_tables.zig");
 
 /// Backtracking-based regex engine
 /// Supports: lazy quantifiers, lookahead/lookbehind, backreferences
@@ -169,13 +170,26 @@ pub const BacktrackEngine = struct {
 
         const c = literal_data.literal.c;
         const ignore_case = literal_data.literal.ignore_case;
-        const input_char = self.input[pos];
+
+        // Decode UTF-8 character at current position
+        const utf8_char = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+        const input_char = utf8_char.codepoint;
+
         const matches = if (ignore_case)
-            std.ascii.toLower(input_char) == std.ascii.toLower(c)
+            toLower(input_char) == toLower(c)
         else
             input_char == c;
 
-        return if (matches) pos + 1 else null;
+        return if (matches) pos + utf8_char.len else null;
+    }
+
+    fn toLower(c: common.Char) common.Char {
+        // ASCII fast path
+        if (c >= 'A' and c <= 'Z') {
+            return c + ('a' - 'A');
+        }
+        // TODO: Unicode case folding for non-ASCII characters
+        return c;
     }
 
     fn matchAny(self: *BacktrackEngine, any_data: ast.Node.NodeData, pos: usize) ?usize {
@@ -530,10 +544,23 @@ pub const BacktrackEngine = struct {
     fn matchCharClass(self: *BacktrackEngine, char_class: common.CharClass, pos: usize) ?usize {
         if (pos >= self.input.len) return null;
 
-        const c = self.input[pos];
-        const matches = char_class.matches(c);
+        // Decode UTF-8 character at current position
+        const utf8_char = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+        const matches = char_class.matches(utf8_char.codepoint);
 
-        return if (matches) pos + 1 else null;
+        return if (matches) pos + utf8_char.len else null;
+    }
+
+    const Utf8Char = struct {
+        codepoint: u21,
+        len: usize,
+    };
+
+    fn decodeUtf8ForwardWithLen(input: []const u8, pos: usize) ?Utf8Char {
+        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
+        if (pos + len > input.len) return null;
+        const codepoint = std.unicode.utf8Decode(input[pos .. pos + len]) catch return null;
+        return Utf8Char{ .codepoint = codepoint, .len = len };
     }
 
     fn matchGroup(self: *BacktrackEngine, group: ast.Node.Group, pos: usize) ?usize {
@@ -577,16 +604,29 @@ pub const BacktrackEngine = struct {
     }
 
     fn isWordBoundary(self: *BacktrackEngine, pos: usize) bool {
-        const before_is_word = if (pos > 0) isWordChar(self.input[pos - 1]) else false;
-        const after_is_word = if (pos < self.input.len) isWordChar(self.input[pos]) else false;
+        const input = self.input;
+        const use_unicode = self.flags.unicode;
+
+        // Decode UTF-8 codepoints
+        const before_cp = if (pos > 0) decodeUtf8Backward(input, pos) else null;
+        const after_cp = if (pos < input.len) decodeUtf8Forward(input, pos) else null;
+
+        const before_is_word = if (before_cp) |cp| unicode_tables.isWordChar(cp, use_unicode) else false;
+        const after_is_word = if (after_cp) |cp| unicode_tables.isWordChar(cp, use_unicode) else false;
+
         return before_is_word != after_is_word;
     }
 
-    fn isWordChar(c: u8) bool {
-        return (c >= 'a' and c <= 'z') or
-            (c >= 'A' and c <= 'Z') or
-            (c >= '0' and c <= '9') or
-            c == '_';
+    fn decodeUtf8Forward(input: []const u8, pos: usize) ?u21 {
+        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
+        if (pos + len > input.len) return null;
+        return std.unicode.utf8Decode(input[pos .. pos + len]) catch null;
+    }
+
+    fn decodeUtf8Backward(input: []const u8, pos: usize) ?u21 {
+        var i = pos - 1;
+        while (i > 0 and (input[i] & 0xC0) == 0x80) : (i -= 1) {}
+        return decodeUtf8Forward(input, i);
     }
 
     fn matchLookahead(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {

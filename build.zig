@@ -305,6 +305,30 @@ pub fn build(b: *std.Build) void {
     });
     const run_debug_inline_tests = b.addRunArtifact(debug_inline_tests);
 
+    const unicode_debug_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unicode_debug.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_unicode_debug_tests = b.addRunArtifact(unicode_debug_tests);
+
+    const test_90_debug = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_90_debug.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_test_90_debug = b.addRunArtifact(test_90_debug);
+
     const test_recursion_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/test_recursion.zig"),
@@ -316,6 +340,42 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_test_recursion_tests = b.addRunArtifact(test_recursion_tests);
+
+    const unicode_property_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unicode_property_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_unicode_property_tests = b.addRunArtifact(unicode_property_tests);
+
+    const unicode_functions_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unicode_functions_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_unicode_functions_tests = b.addRunArtifact(unicode_functions_tests);
+
+    const debug_unicode_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/debug_unicode_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_debug_unicode_tests = b.addRunArtifact(debug_unicode_tests);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -350,6 +410,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_named_captures_tests.step);
     test_step.dependOn(&run_inline_modifiers_tests.step);
     test_step.dependOn(&run_debug_inline_tests.step);
+    test_step.dependOn(&run_unicode_debug_tests.step);
+    test_step.dependOn(&run_test_90_debug.step);
+    test_step.dependOn(&run_test_recursion_tests.step);
+    test_step.dependOn(&run_unicode_property_tests.step);
+    test_step.dependOn(&run_unicode_functions_tests.step);
+    test_step.dependOn(&run_debug_unicode_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;
@@ -411,6 +477,16 @@ pub fn build(b: *std.Build) void {
     });
     const run_parser_compiler_edge_cases_tests = b.addRunArtifact(parser_compiler_edge_cases_tests);
     test_step.dependOn(&run_parser_compiler_edge_cases_tests.step);
+
+    const unicode_generator_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/generate_unicode_tables.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_unicode_generator_tests = b.addRunArtifact(unicode_generator_tests);
+    test_step.dependOn(&run_unicode_generator_tests.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
@@ -571,6 +647,12 @@ pub fn build(b: *std.Build) void {
     const test_debug_inline_step = b.step("test-debug-inline", "Run debug_inline tests");
     test_debug_inline_step.dependOn(&run_debug_inline_tests.step);
 
-    const test_recursion_step = b.step("test-recursion", "Run test_recursion tests");
-    test_recursion_step.dependOn(&run_test_recursion_tests.step);
+    const test_unicode_property_step = b.step("test-unicode-property", "Run unicode_property tests");
+    test_unicode_property_step.dependOn(&run_unicode_property_tests.step);
+
+    const test_unicode_functions_step = b.step("test-unicode-functions", "Run unicode_functions tests");
+    test_unicode_functions_step.dependOn(&run_unicode_functions_tests.step);
+
+    const test_debug_unicode_step = b.step("test-debug-unicode", "Run debug_unicode tests");
+    test_debug_unicode_step.dependOn(&run_debug_unicode_tests.step);
 }

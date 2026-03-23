@@ -1,7 +1,7 @@
 const std = @import("std");
 const compiler = @import("compiler.zig");
 const common = @import("common.zig");
-const ast = @import("ast.zig");
+const unicode_tables = @import("unicode_tables.zig");
 
 /// Capture information for a matched group
 pub const Capture = struct {
@@ -71,12 +71,12 @@ pub const VM = struct {
     }
 
     /// Helper to compare characters with case-insensitive support
-    fn charsMatch(_: *const VM, pattern_char: u8, input_char: u8, ignore_case: bool) bool {
+    fn charsMatch(_: *const VM, pattern_char: common.Char, input_char: common.Char, ignore_case: bool) bool {
         if (!ignore_case) {
             return pattern_char == input_char;
         }
 
-        // Convert both to lowercase for comparison
+        // Convert both to lowercase for comparison (ASCII only for now)
         const p_lower = if (pattern_char >= 'A' and pattern_char <= 'Z')
             pattern_char + ('a' - 'A')
         else
@@ -172,7 +172,14 @@ pub const VM = struct {
 
             if (pos >= input.len) break;
 
-            const c = input[pos];
+            // Decode UTF-8 character at current position
+            const utf8_char = decodeUtf8ForwardWithLen(input, pos) orelse {
+                // Invalid UTF-8, skip this byte
+                pos += 1;
+                continue;
+            };
+            const c = utf8_char.codepoint;
+            const utf8_len = utf8_char.len;
 
             // Process all current threads
             for (current_threads.items) |*thread| {
@@ -213,7 +220,7 @@ pub const VM = struct {
             }
 
             // Process epsilon closures for next threads
-            try self.addEpsilonClosure(&next_threads, pos + 1, input, visited_buf);
+            try self.addEpsilonClosure(&next_threads, pos + utf8_len, input, visited_buf);
 
             // Swap thread lists
             const tmp = current_threads;
@@ -226,7 +233,7 @@ pub const VM = struct {
             }
             next_threads.clearRetainingCapacity();
 
-            pos += 1;
+            pos += utf8_len;
         }
 
         // Return the last (longest) match we found
@@ -235,11 +242,19 @@ pub const VM = struct {
 
     /// Find the first match anywhere in the input
     pub fn find(self: *VM, input: []const u8) !?MatchResult {
-        // Try matching at each position
+        // Try matching at each position (advance by UTF-8 codepoint, not byte)
         var pos: usize = 0;
-        while (pos <= input.len) : (pos += 1) {
+        while (pos <= input.len) {
             if (try self.matchAt(input, pos)) |result| {
                 return result;
+            }
+
+            // Advance to next UTF-8 codepoint
+            if (pos < input.len) {
+                const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch 1;
+                pos += len;
+            } else {
+                break;
             }
         }
         return null;
@@ -358,12 +373,40 @@ pub const VM = struct {
     }
 
     fn isWordBoundary(self: *VM, input: []const u8, pos: usize) bool {
-        _ = self;
+        const use_unicode = self.flags.unicode;
 
-        const before_is_word = if (pos > 0) common.CharClasses.word.matches(input[pos - 1]) else false;
-        const after_is_word = if (pos < input.len) common.CharClasses.word.matches(input[pos]) else false;
+        // Decode UTF-8 codepoints
+        const before_cp = if (pos > 0) decodeUtf8Backward(input, pos) else null;
+        const after_cp = if (pos < input.len) decodeUtf8Forward(input, pos) else null;
+
+        const before_is_word = if (before_cp) |cp| unicode_tables.isWordChar(cp, use_unicode) else false;
+        const after_is_word = if (after_cp) |cp| unicode_tables.isWordChar(cp, use_unicode) else false;
 
         return before_is_word != after_is_word;
+    }
+
+    const Utf8Char = struct {
+        codepoint: u21,
+        len: usize,
+    };
+
+    fn decodeUtf8Forward(input: []const u8, pos: usize) ?u21 {
+        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
+        if (pos + len > input.len) return null;
+        return std.unicode.utf8Decode(input[pos .. pos + len]) catch null;
+    }
+
+    fn decodeUtf8ForwardWithLen(input: []const u8, pos: usize) ?Utf8Char {
+        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
+        if (pos + len > input.len) return null;
+        const codepoint = std.unicode.utf8Decode(input[pos .. pos + len]) catch return null;
+        return Utf8Char{ .codepoint = codepoint, .len = len };
+    }
+
+    fn decodeUtf8Backward(input: []const u8, pos: usize) ?u21 {
+        var i = pos - 1;
+        while (i > 0 and (input[i] & 0xC0) == 0x80) : (i -= 1) {}
+        return decodeUtf8Forward(input, i);
     }
 };
 

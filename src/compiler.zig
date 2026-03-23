@@ -26,7 +26,7 @@ pub const Transition = struct {
 
     pub const TransitionData = union(TransitionType) {
         epsilon: void,
-        char: struct { c: u8, ignore_case: bool },
+        char: struct { c: common.Char, ignore_case: bool },
         char_class: struct { class: common.CharClass, ignore_case: bool },
         any: struct { dot_all: bool },
         anchor: struct { type: ast.AnchorType, multiline: bool },
@@ -40,7 +40,7 @@ pub const Transition = struct {
         };
     }
 
-    pub fn char(c: u8, ignore_case: bool, to: StateId) Transition {
+    pub fn char(c: common.Char, ignore_case: bool, to: StateId) Transition {
         return .{
             .transition_type = .char,
             .to = to,
@@ -58,6 +58,7 @@ pub const Transition = struct {
                 .class = .{
                     .ranges = ranges_copy,
                     .negated = class.negated,
+                    .unicode_property = class.unicode_property,
                 },
                 .ignore_case = ignore_case,
             } },
@@ -210,7 +211,7 @@ pub const Compiler = struct {
     }
 
     /// Compile a literal character
-    fn compileLiteral(self: *Compiler, c: u8, ignore_case: bool) !Fragment {
+    fn compileLiteral(self: *Compiler, c: common.Char, ignore_case: bool) !Fragment {
         const start = try self.nfa.addState();
         const accept = try self.nfa.addState();
 

@@ -7,33 +7,35 @@ const ErrorContext = @import("errors.zig").ErrorContext;
 /// Token types for lexical analysis
 pub const TokenType = enum {
     literal,
-    dot, // .
-    star, // *
-    plus, // +
-    question, // ?
-    pipe, // |
-    lparen, // (
-    rparen, // )
-    lbracket, // [
-    rbracket, // ]
-    lbrace, // {
-    rbrace, // }
-    caret, // ^
-    dollar, // $
-    backslash, // \
-    escape_d, // \d
-    escape_D, // \D
-    escape_w, // \w
-    escape_W, // \W
-    escape_s, // \s
-    escape_S, // \S
-    escape_b, // \b
-    escape_B, // \B
-    escape_A, // \A - start of text
-    escape_z, // \z - end of text
-    escape_Z, // \Z - end of text (before final newline)
-    escape_char, // \n, \t, etc.
-    backref, // \1, \2, etc.
+    dot,
+    star,
+    plus,
+    question,
+    pipe,
+    lparen,
+    rparen,
+    lbracket,
+    rbracket,
+    lbrace,
+    rbrace,
+    caret,
+    dollar,
+    backslash,
+    escape_char,
+    escape_d,
+    escape_D,
+    escape_w,
+    escape_W,
+    escape_s,
+    escape_S,
+    escape_b,
+    escape_B,
+    escape_A,
+    escape_z,
+    escape_Z,
+    backref,
+    pcre_ucp,
+    pcre_utf,
     eof,
 };
 
@@ -68,6 +70,18 @@ pub const Lexer = struct {
         if (self.pos >= self.input.len) return null;
         const c = self.input[self.pos];
         self.pos += 1;
+
+        // Skip UTF-8 continuation bytes (10xxxxxx) to keep tokens aligned with codepoints
+        // This ensures that multi-byte UTF-8 characters are treated as single tokens
+        if (c >= 0x80) {
+            const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+            // Skip the continuation bytes (we already advanced by 1, so skip len-1 more)
+            var i: usize = 1;
+            while (i < len and self.pos < self.input.len) : (i += 1) {
+                self.pos += 1;
+            }
+        }
+
         return c;
     }
 
@@ -155,16 +169,9 @@ pub const Lexer = struct {
             return self.makeToken(.eof, 0);
         };
 
-        // TODO: Remove this check when implementing full Unicode support
-        // Detect and reject PCRE verbs: (*UTF), (*UCP), (*FAIL), etc.
+        // Parse PCRE verbs: (*UTF), (*UCP), etc.
         if (c == '(' and self.peek() == '*') {
-            _ = self.advance(); // consume *
-            // Consume until )
-            while (self.peek()) |next_c| {
-                _ = self.advance();
-                if (next_c == ')') break;
-            }
-            return RegexError.PCREVerbsNotSupported;
+            return try self.parsePcreVerb();
         }
 
         return switch (c) {
@@ -186,9 +193,29 @@ pub const Lexer = struct {
         };
     }
 
-    pub fn reset(self: *Lexer) void {
-        self.pos = 0;
-        self.start_pos = 0;
+    fn parsePcreVerb(self: *Lexer) !Token {
+        _ = self.advance(); // consume *
+        const start = self.pos;
+
+        // Consume until )
+        while (self.peek()) |c| {
+            if (c == ')') break;
+            _ = self.advance();
+        }
+
+        const verb = self.input[start..self.pos];
+
+        if (std.mem.eql(u8, verb, "UCP")) {
+            self.flags.unicode = true;
+            _ = self.advance(); // consume )
+            return self.makeToken(.pcre_ucp, 0);
+        } else if (std.mem.eql(u8, verb, "UTF") or std.mem.eql(u8, verb, "UTF8")) {
+            self.flags.unicode = true;
+            _ = self.advance(); // consume )
+            return self.makeToken(.pcre_utf, 0);
+        } else {
+            return RegexError.PCREVerbsNotSupported;
+        }
     }
 };
 
@@ -231,7 +258,7 @@ pub const Parser = struct {
         self.flag_stack.deinit(self.allocator);
     }
 
-    fn currentFlags(self: *Parser) common.CompileFlags {
+    pub fn currentFlags(self: *Parser) common.CompileFlags {
         return self.flag_stack.items[self.flag_stack.items.len - 1];
     }
 
@@ -473,7 +500,24 @@ pub const Parser = struct {
             .literal => {
                 try self.advance();
                 const flags = self.currentFlags();
-                return ast.Node.createLiteral(self.allocator, token.value, flags.case_insensitive, span);
+
+                // Decode UTF-8 from raw input at token position
+                const pos = token.span.start;
+                const byte_value = token.value;
+
+                // ASCII fast path
+                const c: common.Char = if (byte_value < 128)
+                    byte_value
+                else blk: {
+                    // Decode UTF-8 for non-ASCII
+                    if (pos >= self.lexer.input.len) break :blk byte_value;
+                    const len = std.unicode.utf8ByteSequenceLength(self.lexer.input[pos]) catch break :blk byte_value;
+                    if (pos + len > self.lexer.input.len) break :blk byte_value;
+                    const codepoint = std.unicode.utf8Decode(self.lexer.input[pos .. pos + len]) catch break :blk byte_value;
+                    break :blk codepoint;
+                };
+
+                return ast.Node.createLiteral(self.allocator, c, flags.case_insensitive, span);
             },
             .dot => {
                 try self.advance();
@@ -492,20 +536,35 @@ pub const Parser = struct {
             },
             .escape_d => {
                 try self.advance();
-                // Duplicate ranges from static predefined class so AST can own them
+                const flags = self.currentFlags();
+                if (flags.unicode) {
+                    return ast.Node.createCharClass(self.allocator, .{
+                        .ranges = &[_]common.CharRange{},
+                        .negated = false,
+                        .unicode_property = .digit,
+                    }, flags.case_insensitive, token.span);
+                }
                 const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.digit.ranges);
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.digit.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                }, flags.case_insensitive, token.span);
             },
             .escape_D => {
                 try self.advance();
+                const flags = self.currentFlags();
+                if (flags.unicode) {
+                    return ast.Node.createCharClass(self.allocator, .{
+                        .ranges = &[_]common.CharRange{},
+                        .negated = true,
+                        .unicode_property = .digit,
+                    }, flags.case_insensitive, token.span);
+                }
                 const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_digit.ranges);
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.non_digit.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                }, flags.case_insensitive, token.span);
             },
             .escape_w => {
                 try self.advance();
@@ -563,6 +622,14 @@ pub const Parser = struct {
                 try self.advance();
                 const index = token.value; // 1-based capture group index
                 return ast.Node.createBackreference(self.allocator, index, null, span);
+            },
+            .pcre_ucp, .pcre_utf => {
+                try self.advance();
+                // Update the current flags in the flag_stack to enable Unicode mode
+                var current_flags = &self.flag_stack.items[self.flag_stack.items.len - 1];
+                current_flags.unicode = true;
+                // Return empty node (these verbs don't produce AST nodes)
+                return ast.Node.createEmpty(self.allocator, span);
             },
             .lparen => {
                 // SECURITY: Check nesting depth to prevent stack overflow
@@ -791,12 +858,22 @@ pub const Parser = struct {
 
     /// Get POSIX character class by name
     fn getPosixClass(self: *Parser, name: []const u8) !common.CharClass {
-        _ = self;
-        if (std.mem.eql(u8, name, "alnum")) return common.CharClasses.posix_alnum;
-        if (std.mem.eql(u8, name, "alpha")) return common.CharClasses.posix_alpha;
+        const is_unicode = self.currentFlags().unicode;
+
+        if (std.mem.eql(u8, name, "alnum")) {
+            if (is_unicode) return common.CharClass{ .ranges = &[_]common.CharRange{}, .negated = false, .unicode_property = .alnum };
+            return common.CharClasses.posix_alnum;
+        }
+        if (std.mem.eql(u8, name, "alpha")) {
+            if (is_unicode) return common.CharClass{ .ranges = &[_]common.CharRange{}, .negated = false, .unicode_property = .letter };
+            return common.CharClasses.posix_alpha;
+        }
+        if (std.mem.eql(u8, name, "digit")) {
+            if (is_unicode) return common.CharClass{ .ranges = &[_]common.CharRange{}, .negated = false, .unicode_property = .digit };
+            return common.CharClasses.posix_digit;
+        }
         if (std.mem.eql(u8, name, "blank")) return common.CharClasses.posix_blank;
         if (std.mem.eql(u8, name, "cntrl")) return common.CharClasses.posix_cntrl;
-        if (std.mem.eql(u8, name, "digit")) return common.CharClasses.posix_digit;
         if (std.mem.eql(u8, name, "graph")) return common.CharClasses.posix_graph;
         if (std.mem.eql(u8, name, "lower")) return common.CharClasses.posix_lower;
         if (std.mem.eql(u8, name, "print")) return common.CharClasses.posix_print;
@@ -808,8 +885,9 @@ pub const Parser = struct {
     }
 
     /// Get literal character from token (special chars are literal inside [...])
-    fn getCharClassChar(self: *Parser) ?u8 {
-        return switch (self.current_token.token_type) {
+    fn getCharClassChar(self: *Parser) ?common.Char {
+        // Get the base character value (single byte from token)
+        const byte_value: u8 = switch (self.current_token.token_type) {
             .literal => self.current_token.value,
             .escape_char => self.current_token.value,
             // Inside character class, special chars are treated as literals
@@ -825,8 +903,25 @@ pub const Parser = struct {
             .dollar => '$',
             .lbracket => '[', // Allow [ as literal (for non-POSIX cases)
             // These should not appear here
-            .rbracket, .caret, .backslash, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .backref, .eof => null,
+            .rbracket, .caret, .backslash, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .backref, .pcre_ucp, .pcre_utf, .eof => return null,
         };
+
+        // For ASCII characters (< 128), return as-is
+        if (byte_value < 128) {
+            return byte_value;
+        }
+
+        // For non-ASCII, decode UTF-8 from the current position in the input
+        // The lexer is positioned at the start of this character
+        const pos = self.current_token.span.start;
+        if (pos >= self.lexer.input.len) return byte_value;
+
+        // Decode UTF-8 sequence
+        const len = std.unicode.utf8ByteSequenceLength(self.lexer.input[pos]) catch return byte_value;
+        if (pos + len > self.lexer.input.len) return byte_value;
+        const codepoint = std.unicode.utf8Decode(self.lexer.input[pos .. pos + len]) catch return byte_value;
+
+        return codepoint;
     }
 
     /// Parse character class [...]
@@ -924,6 +1019,7 @@ pub const Parser = struct {
         const char_class = common.CharClass{
             .ranges = try ranges.toOwnedSlice(self.allocator),
             .negated = negated,
+            .unicode_property = null,
         };
 
         const span = common.Span.init(start, self.current_token.span.end);

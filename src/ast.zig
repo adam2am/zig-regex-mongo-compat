@@ -74,7 +74,7 @@ pub const Node = struct {
     span: common.Span,
 
     pub const NodeData = union(NodeType) {
-        literal: struct { c: u8, ignore_case: bool },
+        literal: struct { c: common.Char, ignore_case: bool },
         any: struct { dot_all: bool },
         concat: Concat,
         alternation: Alternation,
@@ -128,7 +128,7 @@ pub const Node = struct {
         name: ?[]const u8 = null, // optional name for named backreferences
     };
 
-    pub fn createLiteral(allocator: std.mem.Allocator, c: u8, ignore_case: bool, span: common.Span) !*Node {
+    pub fn createLiteral(allocator: std.mem.Allocator, c: common.Char, ignore_case: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .literal,

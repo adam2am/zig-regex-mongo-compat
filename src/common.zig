@@ -1,7 +1,8 @@
 const std = @import("std");
 
 /// Character type used throughout the library
-pub const Char = u8;
+/// u21 supports full Unicode codepoints (U+0000 to U+10FFFF)
+pub const Char = u21;
 
 /// Position in the input string
 pub const Position = usize;
@@ -24,8 +25,25 @@ pub const CharRange = struct {
 pub const CharClass = struct {
     ranges: []const CharRange,
     negated: bool = false,
+    unicode_property: ?UnicodeProperty = null,
+
+    pub const UnicodeProperty = enum {
+        digit,
+        letter,
+        alnum,
+    };
 
     pub fn matches(self: CharClass, c: Char) bool {
+        if (self.unicode_property) |prop| {
+            const unicode = @import("unicode.zig");
+            const prop_match = switch (prop) {
+                .digit => unicode.isDigit(c),
+                .letter => unicode.isLetter(c),
+                .alnum => unicode.isAlphanumeric(c),
+            };
+            return if (self.negated) !prop_match else prop_match;
+        }
+
         var found = false;
         for (self.ranges) |range| {
             if (range.contains(c)) {

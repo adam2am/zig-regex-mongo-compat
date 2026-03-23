@@ -191,16 +191,19 @@ pub fn isInCategory(cp: Codepoint, category: GeneralCategory) bool {
 
 /// Check if a codepoint is a letter
 pub fn isLetter(cp: Codepoint) bool {
-    const cat = getGeneralCategory(cp);
-    return cat == .Lu or cat == .Ll or cat == .Lt or cat == .Lm or cat == .Lo;
+    if (cp < 128) {
+        return (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z');
+    }
+    const unicode_tables = @import("unicode_tables.zig");
+    const rec = unicode_tables.getUcdRecord(cp);
+    return rec.category >= 0 and rec.category <= 4; // Lu, Ll, Lt, Lm, Lo
 }
 
-/// Check if a codepoint is a decimal digit
 pub fn isDigit(cp: Codepoint) bool {
-    return getGeneralCategory(cp) == .Nd;
+    const unicode_tables = @import("unicode_tables.zig");
+    return unicode_tables.isDigit(cp, true);
 }
 
-/// Check if a codepoint is alphanumeric
 pub fn isAlphanumeric(cp: Codepoint) bool {
     return isLetter(cp) or isDigit(cp);
 }
@@ -261,62 +264,99 @@ test "UTF-8 encoding" {
 /// Unicode property names for \p{Property} matching
 pub const UnicodeProperty = enum {
     // General categories (short & long forms)
-    Letter, L,
-    Lowercase_Letter, Ll,
-    Uppercase_Letter, Lu,
-    Titlecase_Letter, Lt,
-    Modifier_Letter, Lm,
-    Other_Letter, Lo,
+    Letter,
+    L,
+    Lowercase_Letter,
+    Ll,
+    Uppercase_Letter,
+    Lu,
+    Titlecase_Letter,
+    Lt,
+    Modifier_Letter,
+    Lm,
+    Other_Letter,
+    Lo,
 
-    Mark, M,
-    Nonspacing_Mark, Mn,
-    Spacing_Mark, Mc,
-    Enclosing_Mark, Me,
+    Mark,
+    M,
+    Nonspacing_Mark,
+    Mn,
+    Spacing_Mark,
+    Mc,
+    Enclosing_Mark,
+    Me,
 
-    Number, N,
-    Decimal_Number, Nd,
-    Letter_Number, Nl,
-    Other_Number, No,
+    Number,
+    N,
+    Decimal_Number,
+    Nd,
+    Letter_Number,
+    Nl,
+    Other_Number,
+    No,
 
-    Punctuation, P,
-    Connector_Punctuation, Pc,
-    Dash_Punctuation, Pd,
-    Open_Punctuation, Ps,
-    Close_Punctuation, Pe,
-    Initial_Punctuation, Pi,
-    Final_Punctuation, Pf,
-    Other_Punctuation, Po,
+    Punctuation,
+    P,
+    Connector_Punctuation,
+    Pc,
+    Dash_Punctuation,
+    Pd,
+    Open_Punctuation,
+    Ps,
+    Close_Punctuation,
+    Pe,
+    Initial_Punctuation,
+    Pi,
+    Final_Punctuation,
+    Pf,
+    Other_Punctuation,
+    Po,
 
-    Symbol, S,
-    Math_Symbol, Sm,
-    Currency_Symbol, Sc,
-    Modifier_Symbol, Sk,
-    Other_Symbol, So,
+    Symbol,
+    S,
+    Math_Symbol,
+    Sm,
+    Currency_Symbol,
+    Sc,
+    Modifier_Symbol,
+    Sk,
+    Other_Symbol,
+    So,
 
-    Separator, Z,
-    Space_Separator, Zs,
-    Line_Separator, Zl,
-    Paragraph_Separator, Zp,
+    Separator,
+    Z,
+    Space_Separator,
+    Zs,
+    Line_Separator,
+    Zl,
+    Paragraph_Separator,
+    Zp,
 
-    Other, C,
-    Control, Cc,
-    Format, Cf,
-    Surrogate, Cs,
-    Private_Use, Co,
-    Not_Assigned, Cn,
+    Other,
+    C,
+    Control,
+    Cc,
+    Format,
+    Cf,
+    Surrogate,
+    Cs,
+    Private_Use,
+    Co,
+    Not_Assigned,
+    Cn,
 
     pub fn fromString(s: []const u8) ?UnicodeProperty {
         const map = std.StaticStringMap(UnicodeProperty).initComptime(.{
-            .{ "Letter", .Letter }, .{ "L", .L },
+            .{ "Letter", .Letter },                     .{ "L", .L },
             .{ "Lowercase_Letter", .Lowercase_Letter }, .{ "Ll", .Ll },
             .{ "Uppercase_Letter", .Uppercase_Letter }, .{ "Lu", .Lu },
-            .{ "Number", .Number }, .{ "N", .N },
-            .{ "Decimal_Number", .Decimal_Number }, .{ "Nd", .Nd },
-            .{ "Punctuation", .Punctuation }, .{ "P", .P },
-            .{ "Symbol", .Symbol }, .{ "S", .S },
-            .{ "Separator", .Separator }, .{ "Z", .Z },
-            .{ "Space_Separator", .Space_Separator }, .{ "Zs", .Zs },
-            .{ "Control", .Control }, .{ "Cc", .Cc },
+            .{ "Number", .Number },                     .{ "N", .N },
+            .{ "Decimal_Number", .Decimal_Number },     .{ "Nd", .Nd },
+            .{ "Punctuation", .Punctuation },           .{ "P", .P },
+            .{ "Symbol", .Symbol },                     .{ "S", .S },
+            .{ "Separator", .Separator },               .{ "Z", .Z },
+            .{ "Space_Separator", .Space_Separator },   .{ "Zs", .Zs },
+            .{ "Control", .Control },                   .{ "Cc", .Cc },
         });
         return map.get(s);
     }
@@ -368,7 +408,7 @@ test "Unicode property matching" {
 // Edge case tests
 test "unicode: invalid UTF-8 sequences" {
     // Truncated multi-byte sequence
-    const truncated = [_]u8{ 0xC3 }; // Should be 2 bytes but only 1
+    const truncated = [_]u8{0xC3}; // Should be 2 bytes but only 1
     try std.testing.expectError(error.InvalidUtf8, decodeUtf8(&truncated));
 
     // Invalid continuation byte
@@ -432,12 +472,12 @@ test "unicode: round-trip encoding/decoding" {
 
     // Test various codepoints can be encoded and decoded back
     const test_codepoints = [_]Codepoint{
-        0x0000, 0x007F,        // ASCII boundaries
-        0x0080, 0x07FF,        // 2-byte boundaries
-        0x0800, 0xFFFF,        // 3-byte boundaries
-        0x10000, 0x10FFFF,     // 4-byte boundaries
-        'a', 'Z', '0', '9',    // Common ASCII
-        0x00E9, 0x20AC,        // Common non-ASCII
+        0x0000, 0x007F, // ASCII boundaries
+        0x0080, 0x07FF, // 2-byte boundaries
+        0x0800, 0xFFFF, // 3-byte boundaries
+        0x10000, 0x10FFFF, // 4-byte boundaries
+        'a', 'Z', '0', '9', // Common ASCII
+        0x00E9, 0x20AC, // Common non-ASCII
     };
 
     for (test_codepoints) |cp| {
