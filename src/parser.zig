@@ -632,6 +632,9 @@ pub const Parser = struct {
                                 // Modify the parent scope's flags (top of stack)
                                 self.flag_stack.items[self.flag_stack.items.len - 1] = new_flags;
 
+                                // Synchronize Lexer's flags so it knows to skip whitespace in (?x) mode
+                                self.lexer.flags = new_flags;
+
                                 // Return empty node (modifier doesn't consume input)
                                 return ast.Node.createEmpty(self.allocator, span);
                             }
