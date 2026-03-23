@@ -33,6 +33,8 @@ pub const TokenType = enum {
     escape_A,
     escape_z,
     escape_Z,
+    escape_p,
+    escape_P,
     backref,
     pcre_ucp,
     pcre_utf,
@@ -132,9 +134,9 @@ pub const Lexer = struct {
                 return self.makeToken(.literal, value);
             },
             'p', 'P' => {
-                // TODO: Remove this error when implementing full Unicode support
-                // Unicode properties: \p{Latin}, \p{Hangul}, etc.
-                return RegexError.UnicodeNotSupported;
+                // Unicode properties: \p{Latin}, \p{Greek}, etc.
+                // Parser will handle the {Name} part
+                return self.makeToken(if (c == 'P') .escape_P else .escape_p, 0);
             },
             '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
                 // Backreference \1, \2, etc.
@@ -606,6 +608,46 @@ pub const Parser = struct {
                 try self.advance();
                 return ast.Node.createAnchor(self.allocator, .non_word_boundary, self.currentFlags().multiline, span);
             },
+            .escape_p, .escape_P => {
+                const is_negated = (self.current_token.token_type == .escape_P);
+                const token_span = self.current_token.span;
+
+                // Parse {PropertyName} from lexer input WITHOUT advancing first
+                // The lexer has consumed \p and is now pointing at {
+                const current_pos = self.lexer.pos;
+                if (current_pos >= self.lexer.input.len or self.lexer.input[current_pos] != '{') {
+                    return RegexError.InvalidUnicodeProperty;
+                }
+
+                // Find closing brace
+                var end_pos = current_pos + 1;
+                while (end_pos < self.lexer.input.len and self.lexer.input[end_pos] != '}') {
+                    end_pos += 1;
+                }
+
+                if (end_pos >= self.lexer.input.len) {
+                    return RegexError.InvalidUnicodeProperty;
+                }
+
+                const prop_name = self.lexer.input[current_pos + 1 .. end_pos];
+                self.lexer.pos = end_pos + 1; // Move lexer past '}'
+
+                // Now advance to consume the escape_p token
+                try self.advance();
+
+                // Look up script
+                const unicode_properties = @import("unicode_properties.zig");
+                const script = unicode_properties.SCRIPT_BY_NAME.get(prop_name) orelse {
+                    return RegexError.InvalidUnicodeProperty;
+                };
+
+                // Create CharClass with script property
+                return ast.Node.createCharClass(self.allocator, .{
+                    .ranges = &[_]common.CharRange{},
+                    .negated = is_negated,
+                    .unicode_property = .{ .script = script },
+                }, self.currentFlags().case_insensitive, token_span);
+            },
             .escape_A => {
                 try self.advance();
                 return ast.Node.createAnchor(self.allocator, .start_text, self.currentFlags().multiline, span);
@@ -903,7 +945,7 @@ pub const Parser = struct {
             .dollar => '$',
             .lbracket => '[', // Allow [ as literal (for non-POSIX cases)
             // These should not appear here
-            .rbracket, .caret, .backslash, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .backref, .pcre_ucp, .pcre_utf, .eof => return null,
+            .rbracket, .caret, .backslash, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .escape_p, .escape_P, .backref, .pcre_ucp, .pcre_utf, .eof => return null,
         };
 
         // For ASCII characters (< 128), return as-is

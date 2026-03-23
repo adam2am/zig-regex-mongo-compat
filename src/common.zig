@@ -27,19 +27,24 @@ pub const CharClass = struct {
     negated: bool = false,
     unicode_property: ?UnicodeProperty = null,
 
-    pub const UnicodeProperty = enum {
+    pub const UnicodeProperty = union(enum) {
         digit,
         letter,
         alnum,
+        script: Script,
+
+        pub const Script = @import("unicode_properties.zig").Script;
     };
 
     pub fn matches(self: CharClass, c: Char) bool {
         if (self.unicode_property) |prop| {
             const unicode = @import("unicode.zig");
+            const unicode_properties = @import("unicode_properties.zig");
             const prop_match = switch (prop) {
                 .digit => unicode.isDigit(c),
                 .letter => unicode.isLetter(c),
                 .alnum => unicode.isAlphanumeric(c),
+                .script => |s| unicode_properties.matchesScript(c, s),
             };
             return if (self.negated) !prop_match else prop_match;
         }

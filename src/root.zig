@@ -62,6 +62,9 @@ pub const NamedMatch = @import("named_captures.zig").NamedMatch;
 pub const unicode = @import("unicode.zig");
 pub const UnicodeProperty = @import("unicode.zig").UnicodeProperty;
 
+pub const unicode_properties = @import("unicode_properties.zig");
+pub const Script = @import("unicode_properties.zig").Script;
+
 pub const advanced = @import("advanced_features.zig");
 pub const AtomicGroupNode = @import("advanced_features.zig").AtomicGroupNode;
 pub const ConditionalNode = @import("advanced_features.zig").ConditionalNode;

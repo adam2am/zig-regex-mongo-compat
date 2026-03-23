@@ -32,6 +32,7 @@ pub const RegexError = error{
 
     // Feature support errors (TODO: Remove when implementing full Unicode support)
     UnicodeNotSupported,
+    InvalidUnicodeProperty,
     PCREVerbsNotSupported,
 
     // Runtime errors
