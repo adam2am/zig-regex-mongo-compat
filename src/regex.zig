@@ -730,20 +730,26 @@ fn collectNamedCaptures(node: *ast.Node, map: *std.StringHashMap(usize)) !void {
 }
 
 test "compile empty pattern" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const result = Regex.compile(allocator, "");
     try std.testing.expectError(RegexError.EmptyPattern, result);
 }
 
 test "compile basic pattern" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var regex = try Regex.compile(allocator, "test");
     defer regex.deinit();
     try std.testing.expectEqualStrings("test", regex.pattern);
 }
 
 test "match literal" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var regex = try Regex.compile(allocator, "hello");
     defer regex.deinit();
 

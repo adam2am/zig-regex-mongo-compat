@@ -783,7 +783,9 @@ pub const BacktrackEngine = struct {
 // ============================================================================
 
 test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Pattern: (a+)+b - classic ReDoS pattern
     // Input: "aaaaaaaaaaaaaaaaaaaac" (20 'a's followed by 'c' instead of 'b')
@@ -819,7 +821,9 @@ test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
 }
 
 test "backtrack: ReDoS protection - nested stars (a*)*b" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Pattern: (a*)*b - another catastrophic backtracking pattern
 
@@ -844,7 +848,9 @@ test "backtrack: ReDoS protection - nested stars (a*)*b" {
 }
 
 test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Pattern: (a|a)*b - ambiguous alternation causing exponential backtracking
 
@@ -869,7 +875,9 @@ test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
 }
 
 test "backtrack: configurable step limit" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Test that we can configure a lower step limit
 
@@ -900,7 +908,9 @@ test "backtrack: configurable step limit" {
 }
 
 test "backtrack: step counter increments" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Verify that step counter actually increments during matching
 

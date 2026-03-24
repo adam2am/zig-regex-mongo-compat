@@ -210,7 +210,9 @@ pub const Optimizer = struct {
 };
 
 test "optimizer: literal prefix extraction" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const Parser = @import("parser.zig").Parser;
 
     var parser = try Parser.init(allocator, "hello.*world", .{});
@@ -229,7 +231,9 @@ test "optimizer: literal prefix extraction" {
 }
 
 test "optimizer: anchored detection" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const Parser = @import("parser.zig").Parser;
 
     var parser = try Parser.init(allocator, "^hello$", .{});
@@ -244,7 +248,9 @@ test "optimizer: anchored detection" {
 }
 
 test "optimizer: min/max length calculation" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const Parser = @import("parser.zig").Parser;
 
     // Fixed length pattern

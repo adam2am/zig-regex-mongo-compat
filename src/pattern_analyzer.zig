@@ -380,7 +380,9 @@ pub fn analyzeAndValidate(allocator: std.mem.Allocator, root: *ast.Node, max_ris
 // ============================================================================
 
 test "analyzer: safe pattern" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "abc", .{});
@@ -395,7 +397,9 @@ test "analyzer: safe pattern" {
 }
 
 test "analyzer: nested quantifiers (a+)+" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "(a+)+", .{});
@@ -411,7 +415,9 @@ test "analyzer: nested quantifiers (a+)+" {
 }
 
 test "analyzer: nested stars (a*)*" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "(a*)*", .{});
@@ -425,7 +431,9 @@ test "analyzer: nested stars (a*)*" {
 }
 
 test "analyzer: ambiguous alternation (a|a)*" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "(a|a)*", .{});
@@ -439,7 +447,9 @@ test "analyzer: ambiguous alternation (a|a)*" {
 }
 
 test "analyzer: backreference" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "(a)\\1", .{});
@@ -454,7 +464,9 @@ test "analyzer: backreference" {
 }
 
 test "analyzer: validation rejects critical risk" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "(a+)+", .{});
@@ -467,7 +479,9 @@ test "analyzer: validation rejects critical risk" {
 }
 
 test "analyzer: validation accepts safe pattern" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "abc+", .{});
@@ -479,7 +493,9 @@ test "analyzer: validation accepts safe pattern" {
 }
 
 test "analyzer: complex URL pattern - part" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     const pattern = "(?:/\\w+)*";
@@ -495,7 +511,9 @@ test "analyzer: complex URL pattern - part" {
 }
 
 test "analyzer: full URL pattern" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     const pattern = "(?:https?://)?([a-z]+)(?:/\\w+)*";

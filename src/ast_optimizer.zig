@@ -518,7 +518,9 @@ pub const ASTOptimizer = struct {
 };
 
 test "ast optimizer: constant folding" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     // Test repeat{1,1}(x) -> x
@@ -533,7 +535,9 @@ test "ast optimizer: constant folding" {
 }
 
 test "ast optimizer: simplify quantifiers" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     // Test repeat{0,1} -> optional
@@ -549,7 +553,9 @@ test "ast optimizer: simplify quantifiers" {
 }
 
 test "ast optimizer: remove redundant" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     // Test (a*)* -> a*

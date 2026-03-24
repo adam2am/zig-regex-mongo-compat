@@ -572,7 +572,9 @@ pub const ASTStats = struct {
 };
 
 test "pretty print: tree format" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "a+b", .{});
@@ -589,7 +591,9 @@ test "pretty print: tree format" {
 }
 
 test "pretty print: sexpr format" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "a|b", .{});
@@ -606,7 +610,9 @@ test "pretty print: sexpr format" {
 }
 
 test "pretty print: compact format" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "a+b*", .{});
@@ -623,7 +629,9 @@ test "pretty print: compact format" {
 }
 
 test "AST stats" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const parser = @import("parser.zig");
 
     var p = try parser.Parser.init(allocator, "(a+|b)*c", .{});

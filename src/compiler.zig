@@ -536,7 +536,9 @@ test "compile literal" {
 }
 
 test "compile concatenation" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try @import("parser.zig").Parser.init(allocator, "ab", .{});
     var tree = try parser.parse();
     defer tree.deinit();
@@ -549,7 +551,9 @@ test "compile concatenation" {
 }
 
 test "compile alternation" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try @import("parser.zig").Parser.init(allocator, "a|b", .{});
     var tree = try parser.parse();
     defer tree.deinit();
@@ -562,7 +566,9 @@ test "compile alternation" {
 }
 
 test "compile star" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try @import("parser.zig").Parser.init(allocator, "a*", .{});
     var tree = try parser.parse();
     defer tree.deinit();
@@ -575,10 +581,9 @@ test "compile star" {
 }
 
 test "compiler: repeat expansion limit" {
-    const allocator = std.testing.allocator;
-
-    // Pattern with quantifier exceeding MAX_REPEAT_EXPANSION (10,000)
-    // Parser allows up to 100,000, but compiler should reject > 10,000
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try @import("parser.zig").Parser.init(allocator, "a{50000}", .{});
     var tree = try parser.parse();
     defer tree.deinit();
@@ -591,9 +596,9 @@ test "compiler: repeat expansion limit" {
 }
 
 test "compiler: acceptable repeat expansion" {
-    const allocator = std.testing.allocator;
-
-    // Pattern with quantifier within MAX_REPEAT_EXPANSION
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try @import("parser.zig").Parser.init(allocator, "a{100}", .{});
     var tree = try parser.parse();
     defer tree.deinit();
