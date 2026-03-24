@@ -673,4 +673,7 @@ pub fn build(b: *std.Build) void {
 
     const test_debug_posix_step = b.step("test-debug-posix", "Run debug_posix tests");
     test_debug_posix_step.dependOn(&run_debug_posix_tests.step);
+
+    const test_backreferences_step = b.step("test-backreferences", "Run backreferences tests");
+    test_backreferences_step.dependOn(&run_backreferences_tests.step);
 }

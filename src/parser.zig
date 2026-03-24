@@ -1224,7 +1224,9 @@ test "lexer escape sequences" {
 }
 
 test "parser simple literal" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "abc", .{});
     var result = try parser.parse();
     defer result.deinit();
@@ -1233,7 +1235,9 @@ test "parser simple literal" {
 }
 
 test "parser alternation" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "a|b", .{});
     var result = try parser.parse();
     defer result.deinit();
@@ -1242,7 +1246,9 @@ test "parser alternation" {
 }
 
 test "parser star" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "a*", .{});
     var result = try parser.parse();
     defer result.deinit();
@@ -1251,7 +1257,9 @@ test "parser star" {
 }
 
 test "parser group" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "(ab)", .{});
     var result = try parser.parse();
     defer result.deinit();
@@ -1271,7 +1279,9 @@ test "parser group" {
 // }
 
 test "parser: nesting depth limit" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Create a pattern with 101 levels of nesting (exceeds MAX_NESTING_DEPTH of 100)
     var pattern_buf: [300]u8 = undefined;
@@ -1301,7 +1311,9 @@ test "parser: nesting depth limit" {
 }
 
 test "parser: acceptable nesting depth" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Create a pattern with 50 levels of nesting (well within MAX_NESTING_DEPTH of 100)
     var pattern_buf: [200]u8 = undefined;

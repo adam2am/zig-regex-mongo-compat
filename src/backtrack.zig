@@ -160,18 +160,14 @@ pub const BacktrackEngine = struct {
             .plus => self.matchPlus(node.data.plus, pos),
             .optional => self.matchOptional(node.data.optional, pos),
             .repeat => self.matchRepeat(node.data.repeat, pos),
-            .char_class => {
+            .char_class => blk: {
                 const class = node.data.char_class.class;
-                if (pos >= self.input.len) return null;
+                if (pos >= self.input.len) break :blk null;
 
-                const char_result = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+                const char_result = decodeUtf8ForwardWithLen(self.input, pos) orelse break :blk null;
                 const matches = class.matches(char_result.codepoint);
 
-                if (matches) {
-                    return pos + char_result.len;
-                } else {
-                    return null;
-                }
+                break :blk if (matches) pos + char_result.len else null;
             },
             .group => self.matchGroup(node.data.group, pos),
             .anchor => blk: {
@@ -249,10 +245,10 @@ pub const BacktrackEngine = struct {
     }
 
     fn matchConcat(self: *BacktrackEngine, concat: ast.Node.Concat, pos: usize) ?usize {
-        // Check if left side has quantifiers that need backtracking
-        const needs_backtrack = self.hasQuantifiers(concat.left);
+        const left_has_quantifiers = self.hasQuantifiers(concat.left);
+        const right_has_quantifiers = self.hasQuantifiers(concat.right);
 
-        if (needs_backtrack) {
+        if (left_has_quantifiers) {
             // For quantifiers, collect all possible matches and try them in order
             // Lazy quantifiers will be tried minimal-first, greedy maximal-first
             var left_positions = std.ArrayList(usize).initCapacity(self.allocator, 0) catch return null;
@@ -271,12 +267,16 @@ pub const BacktrackEngine = struct {
                 self.popState(stack_base);
             }
             return null;
+        } else if (right_has_quantifiers) {
+            // Right side has quantifiers: match left once, let right handle its own backtracking
+            if (self.matchNode(concat.left, pos)) |left_end| {
+                return self.matchNode(concat.right, left_end);
+            }
+            return null;
         } else {
             // For simple patterns without quantifiers, just try once
             if (self.matchNode(concat.left, pos)) |left_end| {
-                if (self.matchNode(concat.right, left_end)) |right_end| {
-                    return right_end;
-                }
+                return self.matchNode(concat.right, left_end);
             }
             return null;
         }
@@ -375,6 +375,43 @@ pub const BacktrackEngine = struct {
                     try self.collectGreedyRepeatMatches(repeat, pos, positions);
                 } else {
                     try self.collectLazyRepeatMatches(repeat, pos, positions);
+                }
+            },
+            .concat => {
+                // Concat needs special handling: if it contains quantifiers, collect all positions
+                const concat = node.data.concat;
+                const left_has_quantifiers = self.hasQuantifiers(concat.left);
+                const right_has_quantifiers = self.hasQuantifiers(concat.right);
+
+                if (left_has_quantifiers) {
+                    // Collect all left positions
+                    var left_positions = std.ArrayList(usize).initCapacity(self.allocator, 0) catch return;
+                    defer left_positions.deinit(self.allocator);
+
+                    try self.collectAllMatches(concat.left, pos, &left_positions);
+
+                    // For each left position, collect all right positions
+                    if (right_has_quantifiers) {
+                        for (left_positions.items) |left_end| {
+                            try self.collectAllMatches(concat.right, left_end, positions);
+                        }
+                    } else {
+                        for (left_positions.items) |left_end| {
+                            if (self.matchNode(concat.right, left_end)) |right_end| {
+                                try positions.append(self.allocator, right_end);
+                            }
+                        }
+                    }
+                } else if (right_has_quantifiers) {
+                    // Match left once, then collect all right positions
+                    if (self.matchNode(concat.left, pos)) |left_end| {
+                        try self.collectAllMatches(concat.right, left_end, positions);
+                    }
+                } else {
+                    // No quantifiers: single match
+                    if (self.matchNode(node, pos)) |end| {
+                        try positions.append(self.allocator, end);
+                    }
                 }
             },
             else => {
