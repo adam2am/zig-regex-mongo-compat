@@ -88,7 +88,7 @@ pub const ASTOptimizer = struct {
                 const left = node.*.data.alternation.left;
                 const right = node.*.data.alternation.right;
                 if (left.node_type == .literal and right.node_type == .literal) {
-                    if (left.data.literal == right.data.literal) {
+                    if (left.data.literal.c == right.data.literal.c and left.data.literal.ignore_case == right.data.literal.ignore_case) {
                         node.*.* = left.*;
                         self.allocator.destroy(left);
                         self.allocator.destroy(right);
@@ -370,7 +370,7 @@ pub const ASTOptimizer = struct {
                 if (node.*.data.plus.child.node_type == .optional) {
                     const optional_child = node.*.data.plus.child;
                     const child = optional_child.data.optional.child;
-                    const greedy = node.*.data.plus.greedy;
+                    const mode = node.*.data.plus.mode;
                     const span = node.*.span;
                     // Free the optional node since we're bypassing it
                     self.allocator.destroy(optional_child);
@@ -379,7 +379,7 @@ pub const ASTOptimizer = struct {
                         .data = .{
                             .star = .{
                                 .child = child,
-                                .greedy = greedy,
+                                .mode = mode,
                             },
                         },
                         .span = span,
@@ -398,14 +398,14 @@ pub const ASTOptimizer = struct {
                 // Convert repeat{0,1} to optional
                 if (repeat.bounds.min == 0 and repeat.bounds.max != null and repeat.bounds.max.? == 1) {
                     const child = repeat.child;
-                    const greedy = repeat.greedy;
+                    const mode = repeat.mode;
                     const span = node.*.span;
                     node.*.* = .{
                         .node_type = .optional,
                         .data = .{
                             .optional = .{
                                 .child = child,
-                                .greedy = greedy,
+                                .mode = mode,
                             },
                         },
                         .span = span,
@@ -416,14 +416,14 @@ pub const ASTOptimizer = struct {
                 // Convert repeat{0,} to star
                 else if (repeat.bounds.min == 0 and repeat.bounds.max == null) {
                     const child = repeat.child;
-                    const greedy = repeat.greedy;
+                    const mode = repeat.mode;
                     const span = node.*.span;
                     node.*.* = .{
                         .node_type = .star,
                         .data = .{
                             .star = .{
                                 .child = child,
-                                .greedy = greedy,
+                                .mode = mode,
                             },
                         },
                         .span = span,
@@ -434,14 +434,14 @@ pub const ASTOptimizer = struct {
                 // Convert repeat{1,} to plus
                 else if (repeat.bounds.min == 1 and repeat.bounds.max == null) {
                     const child = repeat.child;
-                    const greedy = repeat.greedy;
+                    const mode = repeat.mode;
                     const span = node.*.span;
                     node.*.* = .{
                         .node_type = .plus,
                         .data = .{
                             .plus = .{
                                 .child = child,
-                                .greedy = greedy,
+                                .mode = mode,
                             },
                         },
                         .span = span,

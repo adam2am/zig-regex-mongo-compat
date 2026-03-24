@@ -223,7 +223,8 @@ test "optimizer: literal prefix extraction" {
 
     try std.testing.expect(info.literal_prefix != null);
     if (info.literal_prefix) |prefix| {
-        try std.testing.expectEqualStrings("hello", prefix);
+        const expected_u21 = [_]u21{ 'h', 'e', 'l', 'l', 'o' };
+        try std.testing.expectEqualSlices(u21, &expected_u21, prefix);
     }
 }
 

@@ -181,10 +181,10 @@ pub const PatternAnalyzer = struct {
 
         // Check if quantifier is greedy or lazy
         const greedy = switch (node.node_type) {
-            .star => node.data.star.greedy,
-            .plus => node.data.plus.greedy,
-            .optional => node.data.optional.greedy,
-            .repeat => node.data.repeat.greedy,
+            .star => node.data.star.mode == .greedy,
+            .plus => node.data.plus.mode == .greedy,
+            .optional => node.data.optional.mode == .greedy,
+            .repeat => node.data.repeat.mode == .greedy,
             else => true,
         };
 
@@ -327,7 +327,7 @@ pub const PatternAnalyzer = struct {
         if (left.node_type != right.node_type) return false;
 
         return switch (left.node_type) {
-            .literal => left.data.literal == right.data.literal,
+            .literal => left.data.literal.c == right.data.literal.c and left.data.literal.ignore_case == right.data.literal.ignore_case,
             .any => true,
             .star => self.nodesAreIdentical(left.data.star.child, right.data.star.child),
             .plus => self.nodesAreIdentical(left.data.plus.child, right.data.plus.child),

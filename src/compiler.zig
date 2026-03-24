@@ -197,9 +197,9 @@ pub const Compiler = struct {
             .any => try self.compileAny(node.data.any.dot_all),
             .concat => try self.compileConcat(node.data.concat),
             .alternation => try self.compileAlternation(node.data.alternation),
-            .star => try self.compileStar(node.data.star.child, node.data.star.greedy),
-            .plus => try self.compilePlus(node.data.plus.child, node.data.plus.greedy),
-            .optional => try self.compileOptional(node.data.optional.child, node.data.optional.greedy),
+            .star => try self.compileStar(node.data.star.child, node.data.star.mode),
+            .plus => try self.compilePlus(node.data.plus.child, node.data.plus.mode),
+            .optional => try self.compileOptional(node.data.optional.child, node.data.optional.mode),
             .repeat => try self.compileRepeat(node.data.repeat),
             .char_class => try self.compileCharClass(node.data.char_class.class, node.data.char_class.ignore_case),
             .group => try self.compileGroup(node.data.group),
@@ -270,8 +270,13 @@ pub const Compiler = struct {
         return Fragment{ .start = start, .accept = accept };
     }
 
-    /// Compile Kleene star (*) or lazy star (*?)
-    fn compileStar(self: *Compiler, child: *ast.Node, greedy: bool) !Fragment {
+    /// Compile Kleene star (*), lazy star (*?), or possessive star (*+)
+    fn compileStar(self: *Compiler, child: *ast.Node, mode: ast.Node.QuantifierMode) !Fragment {
+        // Possessive quantifiers require backtracking engine
+        if (mode == .possessive) {
+            return RegexError.NotImplemented;
+        }
+
         const child_frag = try self.compileNode(child);
 
         const start = try self.nfa.addState();
@@ -280,7 +285,7 @@ pub const Compiler = struct {
         const start_state = self.nfa.getState(start);
         const child_accept = self.nfa.getState(child_frag.accept);
 
-        if (greedy) {
+        if (mode == .greedy) {
             // Greedy: try to match first, then skip
             // Start can go to child or skip to accept
             try start_state.addTransition(Transition.epsilon(child_frag.start));
@@ -301,8 +306,13 @@ pub const Compiler = struct {
         return Fragment{ .start = start, .accept = accept };
     }
 
-    /// Compile plus (+) or lazy plus (+?)
-    fn compilePlus(self: *Compiler, child: *ast.Node, greedy: bool) !Fragment {
+    /// Compile plus (+), lazy plus (+?), or possessive plus (++)
+    fn compilePlus(self: *Compiler, child: *ast.Node, mode: ast.Node.QuantifierMode) !Fragment {
+        // Possessive quantifiers require backtracking engine
+        if (mode == .possessive) {
+            return RegexError.NotImplemented;
+        }
+
         const child_frag = try self.compileNode(child);
 
         const start = try self.nfa.addState();
@@ -314,7 +324,7 @@ pub const Compiler = struct {
 
         const child_accept = self.nfa.getState(child_frag.accept);
 
-        if (greedy) {
+        if (mode == .greedy) {
             // Greedy: try to loop back first, then accept
             try child_accept.addTransition(Transition.epsilon(child_frag.start));
             try child_accept.addTransition(Transition.epsilon(accept));
@@ -327,8 +337,13 @@ pub const Compiler = struct {
         return Fragment{ .start = start, .accept = accept };
     }
 
-    /// Compile optional (?) or lazy optional (??)
-    fn compileOptional(self: *Compiler, child: *ast.Node, greedy: bool) !Fragment {
+    /// Compile optional (?), lazy optional (??), or possessive optional (?+)
+    fn compileOptional(self: *Compiler, child: *ast.Node, mode: ast.Node.QuantifierMode) !Fragment {
+        // Possessive quantifiers require backtracking engine
+        if (mode == .possessive) {
+            return RegexError.NotImplemented;
+        }
+
         const child_frag = try self.compileNode(child);
 
         const start = try self.nfa.addState();
@@ -336,7 +351,7 @@ pub const Compiler = struct {
 
         const start_state = self.nfa.getState(start);
 
-        if (greedy) {
+        if (mode == .greedy) {
             // Greedy: try to match first, then skip
             try start_state.addTransition(Transition.epsilon(child_frag.start));
             try start_state.addTransition(Transition.epsilon(accept));
@@ -353,13 +368,18 @@ pub const Compiler = struct {
         return Fragment{ .start = start, .accept = accept };
     }
 
-    /// Compile repetition {m,n} or lazy repetition {m,n}?
+    /// Compile repetition {m,n}, lazy repetition {m,n}?, or possessive repetition {m,n}+
     fn compileRepeat(self: *Compiler, repeat: ast.Node.Repeat) !Fragment {
+        // Possessive quantifiers require backtracking engine
+        if (repeat.mode == .possessive) {
+            return RegexError.NotImplemented;
+        }
+
         // Implement {m,n} as m mandatory copies concatenated with (n-m) optional copies
 
         const min = repeat.bounds.min;
         const max = repeat.bounds.max;
-        const greedy = repeat.greedy;
+        const mode = repeat.mode;
 
         // SECURITY: Defense-in-depth - prevent excessive state allocation
         // Parser should already limit quantifiers to 100,000, but check again
@@ -375,12 +395,12 @@ pub const Compiler = struct {
 
         if (min == 0 and max == null) {
             // {0,} is equivalent to * or *?
-            return self.compileStar(repeat.child, greedy);
+            return self.compileStar(repeat.child, mode);
         }
 
         if (min == 1 and max == null) {
             // {1,} is equivalent to + or +?
-            return self.compilePlus(repeat.child, greedy);
+            return self.compilePlus(repeat.child, mode);
         }
 
         // Handle min == 0 with bounded max: all copies are optional
@@ -396,10 +416,10 @@ pub const Compiler = struct {
                 }
 
                 // {0,n}: n optional copies
-                var current_frag = try self.compileOptional(repeat.child, greedy);
+                var current_frag = try self.compileOptional(repeat.child, mode);
                 var i: usize = 1;
                 while (i < max_val) : (i += 1) {
-                    const opt_fragment = try self.compileOptional(repeat.child, greedy);
+                    const opt_fragment = try self.compileOptional(repeat.child, mode);
                     const accept_state = self.nfa.getState(current_frag.accept);
                     try accept_state.addTransition(Transition.epsilon(opt_fragment.start));
                     current_frag.accept = opt_fragment.accept;
@@ -424,14 +444,14 @@ pub const Compiler = struct {
             const diff = max_val - min;
             i = 0;
             while (i < diff) : (i += 1) {
-                const opt_fragment = try self.compileOptional(repeat.child, greedy);
+                const opt_fragment = try self.compileOptional(repeat.child, mode);
                 const accept_state = self.nfa.getState(current_frag.accept);
                 try accept_state.addTransition(Transition.epsilon(opt_fragment.start));
                 current_frag.accept = opt_fragment.accept;
             }
         } else {
             // {min,} - unbounded: add a star after the mandatory copies
-            const star_frag = try self.compileStar(repeat.child, greedy);
+            const star_frag = try self.compileStar(repeat.child, mode);
             const accept_state = self.nfa.getState(current_frag.accept);
             try accept_state.addTransition(Transition.epsilon(star_frag.start));
             current_frag.accept = star_frag.accept;
@@ -508,7 +528,7 @@ test "compile literal" {
     defer compiler.deinit();
 
     const span = common.Span.init(0, 1);
-    const node = try ast.Node.createLiteral(allocator, 'a', span);
+    const node = try ast.Node.createLiteral(allocator, 'a', false, span);
     defer allocator.destroy(node);
 
     const frag = try compiler.compileLiteral('a', false);

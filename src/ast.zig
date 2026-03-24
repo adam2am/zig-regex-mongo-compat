@@ -101,15 +101,21 @@ pub const Node = struct {
         right: *Node,
     };
 
+    pub const QuantifierMode = enum {
+        greedy, // * + ? {n,m}
+        lazy, // *? +? ?? {n,m}?
+        possessive, // *+ ++ ?+ {n,m}+
+    };
+
     pub const Quantifier = struct {
         child: *Node,
-        greedy: bool = true, // true for greedy, false for lazy
+        mode: QuantifierMode = .greedy,
     };
 
     pub const Repeat = struct {
         child: *Node,
         bounds: RepeatBounds,
-        greedy: bool = true,
+        mode: QuantifierMode = .greedy,
     };
 
     pub const Group = struct {
@@ -168,41 +174,41 @@ pub const Node = struct {
         return node;
     }
 
-    pub fn createStar(allocator: std.mem.Allocator, child: *Node, greedy: bool, span: common.Span) !*Node {
+    pub fn createStar(allocator: std.mem.Allocator, child: *Node, mode: QuantifierMode, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .star,
-            .data = .{ .star = .{ .child = child, .greedy = greedy } },
+            .data = .{ .star = .{ .child = child, .mode = mode } },
             .span = span,
         };
         return node;
     }
 
-    pub fn createPlus(allocator: std.mem.Allocator, child: *Node, greedy: bool, span: common.Span) !*Node {
+    pub fn createPlus(allocator: std.mem.Allocator, child: *Node, mode: QuantifierMode, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .plus,
-            .data = .{ .plus = .{ .child = child, .greedy = greedy } },
+            .data = .{ .plus = .{ .child = child, .mode = mode } },
             .span = span,
         };
         return node;
     }
 
-    pub fn createOptional(allocator: std.mem.Allocator, child: *Node, greedy: bool, span: common.Span) !*Node {
+    pub fn createOptional(allocator: std.mem.Allocator, child: *Node, mode: QuantifierMode, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .optional,
-            .data = .{ .optional = .{ .child = child, .greedy = greedy } },
+            .data = .{ .optional = .{ .child = child, .mode = mode } },
             .span = span,
         };
         return node;
     }
 
-    pub fn createRepeat(allocator: std.mem.Allocator, child: *Node, bounds: RepeatBounds, greedy: bool, span: common.Span) !*Node {
+    pub fn createRepeat(allocator: std.mem.Allocator, child: *Node, bounds: RepeatBounds, mode: QuantifierMode, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .repeat,
-            .data = .{ .repeat = .{ .child = child, .bounds = bounds, .greedy = greedy } },
+            .data = .{ .repeat = .{ .child = child, .bounds = bounds, .mode = mode } },
             .span = span,
         };
         return node;
@@ -350,19 +356,20 @@ pub const AST = struct {
 test "create literal node" {
     const allocator = std.testing.allocator;
     const span = common.Span.init(0, 1);
-    const node = try Node.createLiteral(allocator, 'a', span);
+    const node = try Node.createLiteral(allocator, 'a', false, span);
     defer allocator.destroy(node);
 
     try std.testing.expectEqual(NodeType.literal, node.node_type);
-    try std.testing.expectEqual(@as(u8, 'a'), node.data.literal);
+    try std.testing.expectEqual(@as(common.Char, 'a'), node.data.literal.c);
+    try std.testing.expectEqual(false, node.data.literal.ignore_case);
 }
 
 test "create concat node" {
     const allocator = std.testing.allocator;
     const span = common.Span.init(0, 2);
 
-    const left = try Node.createLiteral(allocator, 'a', common.Span.init(0, 1));
-    const right = try Node.createLiteral(allocator, 'b', common.Span.init(1, 2));
+    const left = try Node.createLiteral(allocator, 'a', false, common.Span.init(0, 1));
+    const right = try Node.createLiteral(allocator, 'b', false, common.Span.init(1, 2));
     const concat = try Node.createConcat(allocator, left, right, span);
     defer concat.destroy(allocator);
 
@@ -373,12 +380,12 @@ test "create star node" {
     const allocator = std.testing.allocator;
     const span = common.Span.init(0, 2);
 
-    const child = try Node.createLiteral(allocator, 'a', common.Span.init(0, 1));
-    const star = try Node.createStar(allocator, child, true, span);
+    const child = try Node.createLiteral(allocator, 'a', false, common.Span.init(0, 1));
+    const star = try Node.createStar(allocator, child, .greedy, span);
     defer star.destroy(allocator);
 
     try std.testing.expectEqual(NodeType.star, star.node_type);
-    try std.testing.expectEqual(true, star.data.star.greedy);
+    try std.testing.expectEqual(true, star.data.star.mode == .greedy);
 }
 
 test "repeat bounds" {

@@ -1,6 +1,18 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 
+/// DRY helper: Convert anchor type to string representation
+fn anchorToString(anchor_type: ast.AnchorType) []const u8 {
+    return switch (anchor_type) {
+        .start_line => "^",
+        .end_line => "$",
+        .start_text => "\\A",
+        .end_text => "\\z",
+        .word_boundary => "\\b",
+        .non_word_boundary => "\\B",
+    };
+}
+
 /// AST pretty-printer for debugging and visualization
 /// Provides multiple output formats: tree view, S-expression, and DOT graph
 pub const PrettyPrinter = struct {
@@ -38,7 +50,7 @@ pub const PrettyPrinter = struct {
 
         switch (node.node_type) {
             .literal => {
-                try writer.print("Literal: '{c}' (0x{x})\n", .{ node.data.literal, node.data.literal });
+                try writer.print("Literal: '{u}' (0x{x})\n", .{ node.data.literal.c, node.data.literal.c });
             },
             .any => {
                 try writer.writeAll("Any (.)\n");
@@ -47,7 +59,7 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll("Empty (ε)\n");
             },
             .anchor => {
-                const anchor_str = switch (node.data.anchor) {
+                const anchor_str = switch (node.data.anchor.type) {
                     .start_line => "^ (start of line)",
                     .end_line => "$ (end of line)",
                     .start_text => "\\A (start of text)",
@@ -58,16 +70,16 @@ pub const PrettyPrinter = struct {
                 try writer.print("Anchor: {s}\n", .{anchor_str});
             },
             .char_class => {
-                const class = node.data.char_class;
-                const negated = if (class.negated) "^" else "";
+                const class_data = node.data.char_class;
+                const negated = if (class_data.class.negated) "^" else "";
                 try writer.print("CharClass: [{s}", .{negated});
 
                 // Show ranges
-                for (class.ranges) |range| {
+                for (class_data.class.ranges) |range| {
                     if (range.start == range.end) {
-                        try writer.print("{c}", .{range.start});
+                        try writer.print("{u}", .{range.start});
                     } else {
-                        try writer.print("{c}-{c}", .{ range.start, range.end });
+                        try writer.print("{u}-{u}", .{ range.start, range.end });
                     }
                 }
                 try writer.writeAll("]\n");
@@ -83,27 +95,43 @@ pub const PrettyPrinter = struct {
                 try self.printTree(node.data.alternation.right, writer, depth + 1);
             },
             .star => {
-                const greedy = if (node.data.star.greedy) "" else "? (lazy)";
-                try writer.print("Star (*{s})\n", .{greedy});
+                const mode_str = switch (node.data.star.mode) {
+                    .greedy => "",
+                    .lazy => "? (lazy)",
+                    .possessive => "+ (possessive)",
+                };
+                try writer.print("Star (*{s})\n", .{mode_str});
                 try self.printTree(node.data.star.child, writer, depth + 1);
             },
             .plus => {
-                const greedy = if (node.data.plus.greedy) "" else "? (lazy)";
-                try writer.print("Plus (+{s})\n", .{greedy});
+                const mode_str = switch (node.data.plus.mode) {
+                    .greedy => "",
+                    .lazy => "? (lazy)",
+                    .possessive => "+ (possessive)",
+                };
+                try writer.print("Plus (+{s})\n", .{mode_str});
                 try self.printTree(node.data.plus.child, writer, depth + 1);
             },
             .optional => {
-                const greedy = if (node.data.optional.greedy) "" else "? (lazy)";
-                try writer.print("Optional (?{s})\n", .{greedy});
+                const mode_str = switch (node.data.optional.mode) {
+                    .greedy => "",
+                    .lazy => "? (lazy)",
+                    .possessive => "+ (possessive)",
+                };
+                try writer.print("Optional (?{s})\n", .{mode_str});
                 try self.printTree(node.data.optional.child, writer, depth + 1);
             },
             .repeat => {
                 const repeat = node.data.repeat;
-                const greedy = if (repeat.greedy) "" else "? (lazy)";
+                const mode_str = switch (repeat.mode) {
+                    .greedy => "",
+                    .lazy => "? (lazy)",
+                    .possessive => "+ (possessive)",
+                };
                 if (repeat.bounds.max) |max| {
-                    try writer.print("Repeat {{{d},{d}}}{s}\n", .{ repeat.bounds.min, max, greedy });
+                    try writer.print("Repeat {{{d},{d}}}{s}\n", .{ repeat.bounds.min, max, mode_str });
                 } else {
-                    try writer.print("Repeat {{{d},}}{s}\n", .{ repeat.bounds.min, greedy });
+                    try writer.print("Repeat {{{d},}}{s}\n", .{ repeat.bounds.min, mode_str });
                 }
                 try self.printTree(repeat.child, writer, depth + 1);
             },
@@ -145,7 +173,7 @@ pub const PrettyPrinter = struct {
     fn printSExpr(self: *PrettyPrinter, node: *ast.Node, writer: anytype) !void {
         switch (node.node_type) {
             .literal => {
-                try writer.print("(lit '{c}')", .{node.data.literal});
+                try writer.print("(lit '{u}')", .{node.data.literal.c});
             },
             .any => {
                 try writer.writeAll("(any)");
@@ -154,25 +182,18 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll("(empty)");
             },
             .anchor => {
-                const anchor_str = switch (node.data.anchor) {
-                    .start_line => "^",
-                    .end_line => "$",
-                    .start_text => "\\A",
-                    .end_text => "\\z",
-                    .word_boundary => "\\b",
-                    .non_word_boundary => "\\B",
-                };
-                try writer.print("(anchor {s})", .{anchor_str});
+                const anchor_str = anchorToString(node.data.anchor.type);
+                try writer.print("Anchor\\n{s}", .{anchor_str});
             },
             .char_class => {
                 try writer.writeAll("(class ");
                 const class = node.data.char_class;
-                if (class.negated) try writer.writeAll("^ ");
-                for (class.ranges) |range| {
+                if (class.class.negated) try writer.writeAll("^ ");
+                for (class.class.ranges) |range| {
                     if (range.start == range.end) {
-                        try writer.print("{c} ", .{range.start});
+                        try writer.print("{u} ", .{range.start});
                     } else {
-                        try writer.print("{c}-{c} ", .{ range.start, range.end });
+                        try writer.print("{u}-{u} ", .{ range.start, range.end });
                     }
                 }
                 try writer.writeAll(")");
@@ -192,26 +213,42 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll(")");
             },
             .star => {
-                const op = if (node.data.star.greedy) "star" else "star-lazy";
+                const op = switch (node.data.star.mode) {
+                    .greedy => "star",
+                    .lazy => "star-lazy",
+                    .possessive => "star-possessive",
+                };
                 try writer.print("({s} ", .{op});
                 try self.printSExpr(node.data.star.child, writer);
                 try writer.writeAll(")");
             },
             .plus => {
-                const op = if (node.data.plus.greedy) "plus" else "plus-lazy";
+                const op = switch (node.data.plus.mode) {
+                    .greedy => "plus",
+                    .lazy => "plus-lazy",
+                    .possessive => "plus-possessive",
+                };
                 try writer.print("({s} ", .{op});
                 try self.printSExpr(node.data.plus.child, writer);
                 try writer.writeAll(")");
             },
             .optional => {
-                const op = if (node.data.optional.greedy) "opt" else "opt-lazy";
+                const op = switch (node.data.optional.mode) {
+                    .greedy => "opt",
+                    .lazy => "opt-lazy",
+                    .possessive => "opt-possessive",
+                };
                 try writer.print("({s} ", .{op});
                 try self.printSExpr(node.data.optional.child, writer);
                 try writer.writeAll(")");
             },
             .repeat => {
                 const repeat = node.data.repeat;
-                const op = if (repeat.greedy) "repeat" else "repeat-lazy";
+                const op = switch (repeat.mode) {
+                    .greedy => "repeat",
+                    .lazy => "repeat-lazy",
+                    .possessive => "repeat-possessive",
+                };
                 if (repeat.bounds.max) |max| {
                     try writer.print("({s} {d} {d} ", .{ op, repeat.bounds.min, max });
                 } else {
@@ -268,42 +305,35 @@ pub const PrettyPrinter = struct {
         try writer.print("  n{d} [label=\"", .{current_id});
 
         switch (node.node_type) {
-            .literal => try writer.print("Lit: '{c}'", .{node.data.literal}),
+            .literal => try writer.print("Lit: '{u}'", .{node.data.literal.c}),
             .any => try writer.writeAll("Any"),
             .empty => try writer.writeAll("ε"),
             .anchor => {
-                const anchor_str = switch (node.data.anchor) {
-                    .start_line => "^",
-                    .end_line => "$",
-                    .start_text => "\\\\A",
-                    .end_text => "\\\\z",
-                    .word_boundary => "\\\\b",
-                    .non_word_boundary => "\\\\B",
-                };
-                try writer.print("Anchor\\n{s}", .{anchor_str});
+                const anchor_str = anchorToString(node.data.anchor.type);
+                try writer.print("Anchor: {s}", .{anchor_str});
             },
             .char_class => try writer.writeAll("CharClass"),
             .concat => try writer.writeAll("Concat"),
             .alternation => try writer.writeAll("Alt (|)"),
             .star => {
-                const lazy = if (node.data.star.greedy) "" else "?";
+                const lazy = if (node.data.star.mode == .greedy) "" else "?";
                 try writer.print("Star (*{s})", .{lazy});
             },
             .plus => {
-                const lazy = if (node.data.plus.greedy) "" else "?";
+                const lazy = if (node.data.plus.mode == .greedy) "" else "?";
                 try writer.print("Plus (+{s})", .{lazy});
             },
             .optional => {
-                const lazy = if (node.data.optional.greedy) "" else "?";
+                const lazy = if (node.data.optional.mode == .greedy) "" else "?";
                 try writer.print("Opt (?{s})", .{lazy});
             },
             .repeat => {
                 const repeat = node.data.repeat;
-                const lazy = if (repeat.greedy) "" else "?";
+                const lazy = if (repeat.mode == .greedy) "" else "?";
                 if (repeat.bounds.max) |max| {
-                    try writer.print("Repeat\\n{{{d},{d}}}{s}", .{ repeat.bounds.min, max, lazy });
+                    try writer.print("Repeat ({{{d},{d}}}{s})", .{ repeat.bounds.min, max, lazy });
                 } else {
-                    try writer.print("Repeat\\n{{{d},}}{s}", .{ repeat.bounds.min, lazy });
+                    try writer.print("Repeat ({{{d},}}{s})", .{ repeat.bounds.min, lazy });
                 }
             },
             .group => {
@@ -357,36 +387,29 @@ pub const PrettyPrinter = struct {
     fn printCompact(self: *PrettyPrinter, node: *ast.Node, writer: anytype) !void {
         switch (node.node_type) {
             .literal => {
-                const c = node.data.literal;
+                const c = node.data.literal.c;
                 // Escape special chars
                 if (isSpecialChar(c)) {
-                    try writer.print("\\{c}", .{c});
+                    try writer.print("\\{u}", .{c});
                 } else {
-                    try writer.print("{c}", .{c});
+                    try writer.print("{u}", .{c});
                 }
             },
             .any => try writer.writeAll("."),
             .empty => {},
             .anchor => {
-                const anchor_str = switch (node.data.anchor) {
-                    .start_line => "^",
-                    .end_line => "$",
-                    .start_text => "\\A",
-                    .end_text => "\\z",
-                    .word_boundary => "\\b",
-                    .non_word_boundary => "\\B",
-                };
+                const anchor_str = anchorToString(node.data.anchor.type);
                 try writer.writeAll(anchor_str);
             },
             .char_class => {
                 const class = node.data.char_class;
                 try writer.writeAll("[");
-                if (class.negated) try writer.writeAll("^");
-                for (class.ranges) |range| {
+                if (class.class.negated) try writer.writeAll("^");
+                for (class.class.ranges) |range| {
                     if (range.start == range.end) {
-                        try writer.print("{c}", .{range.start});
+                        try writer.print("{u}", .{range.start});
                     } else {
-                        try writer.print("{c}-{c}", .{ range.start, range.end });
+                        try writer.print("{u}-{u}", .{ range.start, range.end });
                     }
                 }
                 try writer.writeAll("]");
@@ -403,31 +426,43 @@ pub const PrettyPrinter = struct {
             .star => {
                 try self.printCompact(node.data.star.child, writer);
                 try writer.writeAll("*");
-                if (!node.data.star.greedy) try writer.writeAll("?");
+                switch (node.data.star.mode) {
+                    .greedy => {},
+                    .lazy => try writer.writeAll("?"),
+                    .possessive => try writer.writeAll("+"),
+                }
             },
             .plus => {
                 try self.printCompact(node.data.plus.child, writer);
                 try writer.writeAll("+");
-                if (!node.data.plus.greedy) try writer.writeAll("?");
+                switch (node.data.plus.mode) {
+                    .greedy => {},
+                    .lazy => try writer.writeAll("?"),
+                    .possessive => try writer.writeAll("+"),
+                }
             },
             .optional => {
                 try self.printCompact(node.data.optional.child, writer);
                 try writer.writeAll("?");
-                if (!node.data.optional.greedy) try writer.writeAll("?");
+                switch (node.data.optional.mode) {
+                    .greedy => {},
+                    .lazy => try writer.writeAll("?"),
+                    .possessive => try writer.writeAll("+"),
+                }
             },
             .repeat => {
                 const repeat = node.data.repeat;
                 try self.printCompact(repeat.child, writer);
                 if (repeat.bounds.max) |max| {
-                    if (repeat.bounds.min == max) {
-                        try writer.print("{{{d}}}", .{repeat.bounds.min});
-                    } else {
-                        try writer.print("{{{d},{d}}}", .{ repeat.bounds.min, max });
-                    }
+                    try writer.print("{{{d},{d}}}", .{ repeat.bounds.min, max });
                 } else {
                     try writer.print("{{{d},}}", .{repeat.bounds.min});
                 }
-                if (!repeat.greedy) try writer.writeAll("?");
+                switch (repeat.mode) {
+                    .greedy => {},
+                    .lazy => try writer.writeAll("?"),
+                    .possessive => try writer.writeAll("+"),
+                }
             },
             .group => {
                 const group = node.data.group;
@@ -463,7 +498,7 @@ pub const PrettyPrinter = struct {
         }
     }
 
-    fn isSpecialChar(c: u8) bool {
+    fn isSpecialChar(c: u21) bool {
         return switch (c) {
             '.', '*', '+', '?', '|', '(', ')', '[', ']', '{', '}', '^', '$', '\\' => true,
             else => false,

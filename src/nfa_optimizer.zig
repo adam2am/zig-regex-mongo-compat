@@ -247,13 +247,17 @@ pub const NFAOptimizer = struct {
             .epsilon, .any => {},
             .char => std.hash.autoHash(&hasher, trans.data.char),
             .char_class => {
-                std.hash.autoHash(&hasher, trans.data.char_class.negated);
-                for (trans.data.char_class.ranges) |range| {
+                std.hash.autoHash(&hasher, trans.data.char_class.class.negated);
+                std.hash.autoHash(&hasher, trans.data.char_class.ignore_case);
+                for (trans.data.char_class.class.ranges) |range| {
                     std.hash.autoHash(&hasher, range.start);
                     std.hash.autoHash(&hasher, range.end);
                 }
             },
-            .anchor => std.hash.autoHash(&hasher, @intFromEnum(trans.data.anchor)),
+            .anchor => {
+                std.hash.autoHash(&hasher, @intFromEnum(trans.data.anchor.type));
+                std.hash.autoHash(&hasher, trans.data.anchor.multiline);
+            },
         }
 
         return hasher.final();
@@ -388,8 +392,8 @@ test "nfa_optimizer: optimize transitions" {
     _ = try nfa.addState(); // 1
 
     // Add duplicate transitions
-    try nfa.states.items[0].transitions.append(allocator, compiler.Transition.char('a', 1));
-    try nfa.states.items[0].transitions.append(allocator, compiler.Transition.char('a', 1)); // Duplicate
+    try nfa.states.items[0].transitions.append(allocator, compiler.Transition.char('a', false, 1));
+    try nfa.states.items[0].transitions.append(allocator, compiler.Transition.char('a', false, 1)); // Duplicate
 
     var optimizer = NFAOptimizer.init(allocator, &nfa);
     const optimized = try optimizer.optimizeTransitions();

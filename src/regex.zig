@@ -79,10 +79,10 @@ pub const Regex = struct {
         // Get the final flags from the parser (may have been modified by (*UCP), (*UTF), etc.)
         const final_flags = p.currentFlags();
 
-        // REMOVED: Static ReDoS analysis - Thompson NFA is immune to ReDoS
-        // Runtime step counter (already in backtrack.zig) provides real protection
-        // const pattern_analyzer = @import("pattern_analyzer.zig");
-        // try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
+        // Static ReDoS analysis - rejects CRITICAL risk patterns (consecutive quantifiers)
+        // Thompson NFA is immune, but backtracking engine needs compile-time validation
+        const pattern_analyzer = @import("pattern_analyzer.zig");
+        try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
 
         // Store owned copy of pattern
         const owned_pattern = try allocator.dupe(u8, pattern);
@@ -656,9 +656,9 @@ fn requiresBacktracking(node: *ast.Node) bool {
         // Check for lazy quantifiers
         .star, .plus, .optional => {
             const greedy = switch (node.node_type) {
-                .star => node.data.star.greedy,
-                .plus => node.data.plus.greedy,
-                .optional => node.data.optional.greedy,
+                .star => node.data.star.mode == .greedy,
+                .plus => node.data.plus.mode == .greedy,
+                .optional => node.data.optional.mode == .greedy,
                 else => unreachable,
             };
             if (!greedy) return true; // Lazy quantifiers need backtracking
@@ -673,7 +673,7 @@ fn requiresBacktracking(node: *ast.Node) bool {
             return requiresBacktracking(child);
         },
         .repeat => {
-            if (!node.data.repeat.greedy) return true;
+            if (node.data.repeat.mode != .greedy) return true;
             return requiresBacktracking(node.data.repeat.child);
         },
 

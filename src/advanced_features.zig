@@ -16,10 +16,10 @@ pub const AtomicGroupNode = struct {
 /// Possessive Quantifiers: *+, ++, ?+, {n,m}+
 /// Like greedy quantifiers but don't backtrack
 pub const PossessiveQuantifier = enum {
-    star_possessive,     // *+
-    plus_possessive,     // ++
+    star_possessive, // *+
+    plus_possessive, // ++
     optional_possessive, // ?+
-    repeat_possessive,   // {n,m}+
+    repeat_possessive, // {n,m}+
 
     pub fn fromGreedy(_: bool) ?PossessiveQuantifier {
         // Helper to detect possessive syntax
@@ -74,9 +74,9 @@ pub const AdvancedNodeType = enum {
 // Tests
 test "atomic group creation" {
     const allocator = std.testing.allocator;
-    
+
     // Create a simple child node (literal 'a')
-    const child = try ast.Node.createLiteral(allocator, 'a', .{ .start = 0, .end = 1 });
+    const child = try ast.Node.createLiteral(allocator, 'a', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(child);
 
     const atomic = try AtomicGroupNode.init(allocator, child);
@@ -88,10 +88,10 @@ test "atomic group creation" {
 test "conditional node with group number" {
     const allocator = std.testing.allocator;
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'b', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'b', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
-    const no_node = try ast.Node.createLiteral(allocator, 'c', .{ .start = 0, .end = 1 });
+    const no_node = try ast.Node.createLiteral(allocator, 'c', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(no_node);
 
     const conditional = try ConditionalNode.init(
@@ -109,7 +109,7 @@ test "conditional node with group number" {
 test "advanced_features: conditional with null no_branch" {
     const allocator = std.testing.allocator;
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'b', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'b', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
     const conditional = try ConditionalNode.init(
@@ -127,10 +127,10 @@ test "advanced_features: conditional with null no_branch" {
 test "advanced_features: conditional with group name" {
     const allocator = std.testing.allocator;
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
-    const no_node = try ast.Node.createLiteral(allocator, 'y', .{ .start = 0, .end = 1 });
+    const no_node = try ast.Node.createLiteral(allocator, 'y', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(no_node);
 
     const conditional = try ConditionalNode.init(
@@ -147,10 +147,10 @@ test "advanced_features: conditional with group name" {
 test "advanced_features: conditional with assertion" {
     const allocator = std.testing.allocator;
 
-    const assertion_node = try ast.Node.createLiteral(allocator, 'a', .{ .start = 0, .end = 1 });
+    const assertion_node = try ast.Node.createLiteral(allocator, 'a', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(assertion_node);
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'b', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'b', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
     const conditional = try ConditionalNode.init(
@@ -168,14 +168,14 @@ test "advanced_features: conditional with assertion" {
 test "advanced_features: nested atomic groups" {
     const allocator = std.testing.allocator;
 
-    const inner_child = try ast.Node.createLiteral(allocator, 'a', .{ .start = 0, .end = 1 });
+    const inner_child = try ast.Node.createLiteral(allocator, 'a', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(inner_child);
 
     const inner_atomic = try AtomicGroupNode.init(allocator, inner_child);
     defer allocator.destroy(inner_atomic);
 
     // Create outer atomic group with inner atomic as child (unusual but valid)
-    const outer_child = try ast.Node.createLiteral(allocator, 'b', .{ .start = 0, .end = 1 });
+    const outer_child = try ast.Node.createLiteral(allocator, 'b', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(outer_child);
 
     const outer_atomic = try AtomicGroupNode.init(allocator, outer_child);
@@ -220,7 +220,7 @@ test "advanced_features: possessive fromGreedy returns null" {
 test "advanced_features: conditional with group number zero" {
     const allocator = std.testing.allocator;
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
     const conditional = try ConditionalNode.init(
@@ -237,7 +237,7 @@ test "advanced_features: conditional with group number zero" {
 test "advanced_features: conditional with large group number" {
     const allocator = std.testing.allocator;
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
     const conditional = try ConditionalNode.init(
@@ -254,7 +254,7 @@ test "advanced_features: conditional with large group number" {
 test "advanced_features: conditional with empty group name" {
     const allocator = std.testing.allocator;
 
-    const yes_node = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const yes_node = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_node);
 
     const conditional = try ConditionalNode.init(
@@ -291,7 +291,7 @@ test "advanced_features: stress test - create 1000 atomic groups" {
 
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
-        const child = try ast.Node.createLiteral(allocator, 'a', .{ .start = 0, .end = 1 });
+        const child = try ast.Node.createLiteral(allocator, 'a', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(child);
 
         const atomic = try AtomicGroupNode.init(allocator, child);
@@ -306,10 +306,10 @@ test "advanced_features: stress test - create 1000 conditional nodes" {
 
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
-        const yes_node = try ast.Node.createLiteral(allocator, 'y', .{ .start = 0, .end = 1 });
+        const yes_node = try ast.Node.createLiteral(allocator, 'y', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(yes_node);
 
-        const no_node = try ast.Node.createLiteral(allocator, 'n', .{ .start = 0, .end = 1 });
+        const no_node = try ast.Node.createLiteral(allocator, 'n', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(no_node);
 
         const conditional = try ConditionalNode.init(
@@ -328,7 +328,7 @@ test "advanced_features: deeply nested atomic groups" {
     const allocator = std.testing.allocator;
 
     // Create a chain of nested atomic groups
-    const innermost = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const innermost = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(innermost);
 
     const depth = 10;
@@ -338,7 +338,7 @@ test "advanced_features: deeply nested atomic groups" {
     var current_child = innermost;
     var i: usize = 0;
     while (i < depth) : (i += 1) {
-        const child_copy = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+        const child_copy = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
         atomics[i] = try AtomicGroupNode.init(allocator, child_copy);
         current_child = child_copy;
     }
@@ -356,7 +356,7 @@ test "advanced_features: conditional with all condition types" {
 
     // Test group_number condition
     {
-        const yes = try ast.Node.createLiteral(allocator, 'y', .{ .start = 0, .end = 1 });
+        const yes = try ast.Node.createLiteral(allocator, 'y', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(yes);
         const cond1 = try ConditionalNode.init(allocator, .{ .group_number = 42 }, yes, null);
         defer allocator.destroy(cond1);
@@ -365,7 +365,7 @@ test "advanced_features: conditional with all condition types" {
 
     // Test group_name condition
     {
-        const yes = try ast.Node.createLiteral(allocator, 'y', .{ .start = 0, .end = 1 });
+        const yes = try ast.Node.createLiteral(allocator, 'y', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(yes);
         const cond2 = try ConditionalNode.init(allocator, .{ .group_name = "test_name" }, yes, null);
         defer allocator.destroy(cond2);
@@ -374,9 +374,9 @@ test "advanced_features: conditional with all condition types" {
 
     // Test assertion condition
     {
-        const assertion = try ast.Node.createLiteral(allocator, 'a', .{ .start = 0, .end = 1 });
+        const assertion = try ast.Node.createLiteral(allocator, 'a', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(assertion);
-        const yes = try ast.Node.createLiteral(allocator, 'y', .{ .start = 0, .end = 1 });
+        const yes = try ast.Node.createLiteral(allocator, 'y', false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(yes);
         const cond3 = try ConditionalNode.init(allocator, .{ .assertion = assertion }, yes, null);
         defer allocator.destroy(cond3);
@@ -388,10 +388,10 @@ test "advanced_features: complex conditional tree" {
     const allocator = std.testing.allocator;
 
     // Create a complex conditional with both branches
-    const yes_inner = try ast.Node.createLiteral(allocator, 'a', .{ .start = 0, .end = 1 });
+    const yes_inner = try ast.Node.createLiteral(allocator, 'a', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes_inner);
 
-    const no_inner = try ast.Node.createLiteral(allocator, 'b', .{ .start = 0, .end = 1 });
+    const no_inner = try ast.Node.createLiteral(allocator, 'b', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(no_inner);
 
     const inner_cond = try ConditionalNode.init(
@@ -403,7 +403,7 @@ test "advanced_features: complex conditional tree" {
     defer allocator.destroy(inner_cond);
 
     // Create outer level nodes that reference the inner conditional
-    const outer_yes = try ast.Node.createLiteral(allocator, 'c', .{ .start = 0, .end = 1 });
+    const outer_yes = try ast.Node.createLiteral(allocator, 'c', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(outer_yes);
 
     const outer_cond = try ConditionalNode.init(
@@ -423,7 +423,7 @@ test "advanced_features: memory stress - repeated atomic group creation" {
 
     var cycle: usize = 0;
     while (cycle < 100) : (cycle += 1) {
-        const child = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+        const child = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
         const atomic = try AtomicGroupNode.init(allocator, child);
 
         try std.testing.expect(atomic.child == child);
@@ -481,7 +481,7 @@ test "advanced_features: atomic group with different child types" {
     const literals = [_]u8{ 'a', 'z', '0', '9', ' ', '!', '\n' };
 
     for (literals) |lit| {
-        const child = try ast.Node.createLiteral(allocator, lit, .{ .start = 0, .end = 1 });
+        const child = try ast.Node.createLiteral(allocator, lit, false, .{ .start = 0, .end = 1 });
         defer allocator.destroy(child);
 
         const atomic = try AtomicGroupNode.init(allocator, child);
@@ -494,10 +494,10 @@ test "advanced_features: atomic group with different child types" {
 test "advanced_features: conditional branches equality" {
     const allocator = std.testing.allocator;
 
-    const yes = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const yes = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(yes);
 
-    const no = try ast.Node.createLiteral(allocator, 'x', .{ .start = 0, .end = 1 });
+    const no = try ast.Node.createLiteral(allocator, 'x', false, .{ .start = 0, .end = 1 });
     defer allocator.destroy(no);
 
     const cond = try ConditionalNode.init(

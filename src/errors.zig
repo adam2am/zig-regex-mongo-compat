@@ -143,7 +143,7 @@ pub const ErrorHelper = struct {
             position,
             pattern,
             msg,
-        ).withHint("Valid escapes: \\d \\w \\s \\n \\t \\r or use \\\\ for literal backslash");
+        ).withHint("Valid escapes: \\d \\w \\s \\h \\v \\n \\t \\r or use \\\\ for literal backslash");
     }
 
     /// Create error context for invalid quantifier

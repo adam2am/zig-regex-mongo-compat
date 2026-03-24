@@ -94,21 +94,21 @@ pub const Visualizer = struct {
                 try self.printNode(node.data.alternation.right, depth + 1, new_prefix);
             },
             .star => {
-                const greedy_str = if (node.data.star.greedy) " (greedy)" else " (lazy)";
+                const greedy_str = if (node.data.star.mode == .greedy) " (greedy)" else " (lazy)";
                 try self.writer.print("{s}{s}Star{s} (*{s})\n", .{ prefix, node_color, reset, greedy_str });
                 const new_prefix = try std.fmt.allocPrint(self.allocator, "{s}  ", .{prefix});
                 defer self.allocator.free(new_prefix);
                 try self.printNode(node.data.star.child, depth + 1, new_prefix);
             },
             .plus => {
-                const greedy_str = if (node.data.plus.greedy) " (greedy)" else " (lazy)";
+                const greedy_str = if (node.data.plus.mode == .greedy) " (greedy)" else " (lazy)";
                 try self.writer.print("{s}{s}Plus{s} (+{s})\n", .{ prefix, node_color, reset, greedy_str });
                 const new_prefix = try std.fmt.allocPrint(self.allocator, "{s}  ", .{prefix});
                 defer self.allocator.free(new_prefix);
                 try self.printNode(node.data.plus.child, depth + 1, new_prefix);
             },
             .optional => {
-                const greedy_str = if (node.data.optional.greedy) " (greedy)" else " (lazy)";
+                const greedy_str = if (node.data.optional.mode == .greedy) " (greedy)" else " (lazy)";
                 try self.writer.print("{s}{s}Optional{s} (?{s})\n", .{ prefix, node_color, reset, greedy_str });
                 const new_prefix = try std.fmt.allocPrint(self.allocator, "{s}  ", .{prefix});
                 defer self.allocator.free(new_prefix);

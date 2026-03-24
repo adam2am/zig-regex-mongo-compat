@@ -28,6 +28,10 @@ pub const TokenType = enum {
     escape_W,
     escape_s,
     escape_S,
+    escape_h,
+    escape_H,
+    escape_v,
+    escape_V,
     escape_b,
     escape_B,
     escape_A,
@@ -107,6 +111,10 @@ pub const Lexer = struct {
             'W' => self.makeToken(.escape_W, 0),
             's' => self.makeToken(.escape_s, 0),
             'S' => self.makeToken(.escape_S, 0),
+            'h' => self.makeToken(.escape_h, 0),
+            'H' => self.makeToken(.escape_H, 0),
+            'v' => self.makeToken(.escape_v, 0),
+            'V' => self.makeToken(.escape_V, 0),
             'b' => self.makeToken(.escape_b, 0),
             'B' => self.makeToken(.escape_B, 0),
             'A' => self.makeToken(.escape_A, 0),
@@ -216,19 +224,19 @@ pub const Lexer = struct {
         }
 
         return switch (c) {
-            '.' => self.makeToken(.dot, 0),
-            '*' => self.makeToken(.star, 0),
-            '+' => self.makeToken(.plus, 0),
-            '?' => self.makeToken(.question, 0),
-            '|' => self.makeToken(.pipe, 0),
-            '(' => self.makeToken(.lparen, 0),
-            ')' => self.makeToken(.rparen, 0),
-            '[' => self.makeToken(.lbracket, 0),
-            ']' => self.makeToken(.rbracket, 0),
-            '{' => self.makeToken(.lbrace, 0),
-            '}' => self.makeToken(.rbrace, 0),
-            '^' => self.makeToken(.caret, 0),
-            '$' => self.makeToken(.dollar, 0),
+            '.' => self.makeToken(.dot, c),
+            '*' => self.makeToken(.star, c),
+            '+' => self.makeToken(.plus, c),
+            '?' => self.makeToken(.question, c),
+            '|' => self.makeToken(.pipe, c),
+            '(' => self.makeToken(.lparen, c),
+            ')' => self.makeToken(.rparen, c),
+            '[' => self.makeToken(.lbracket, c),
+            ']' => self.makeToken(.rbracket, c),
+            '{' => self.makeToken(.lbrace, c),
+            '}' => self.makeToken(.rbrace, c),
+            '^' => self.makeToken(.caret, c),
+            '$' => self.makeToken(.dollar, c),
             '\\' => try self.parseEscape(),
             else => self.makeToken(.literal, c),
         };
@@ -426,24 +434,39 @@ pub const Parser = struct {
             switch (token_type) {
                 .star => {
                     try self.advance();
-                    // Check for lazy quantifier (? after *)
-                    const greedy = self.peek() != .question;
-                    if (!greedy) try self.advance();
-                    node = try ast.Node.createStar(self.allocator, node, greedy, span);
+                    // Check for possessive (*+) or lazy (*?)
+                    const mode: ast.Node.QuantifierMode = if (self.peek() == .plus) blk: {
+                        try self.advance();
+                        break :blk .possessive;
+                    } else if (self.peek() == .question) blk: {
+                        try self.advance();
+                        break :blk .lazy;
+                    } else .greedy;
+                    node = try ast.Node.createStar(self.allocator, node, mode, span);
                 },
                 .plus => {
                     try self.advance();
-                    // Check for lazy quantifier (? after +)
-                    const greedy = self.peek() != .question;
-                    if (!greedy) try self.advance();
-                    node = try ast.Node.createPlus(self.allocator, node, greedy, span);
+                    // Check for possessive (++) or lazy (+?)
+                    const mode: ast.Node.QuantifierMode = if (self.peek() == .plus) blk: {
+                        try self.advance();
+                        break :blk .possessive;
+                    } else if (self.peek() == .question) blk: {
+                        try self.advance();
+                        break :blk .lazy;
+                    } else .greedy;
+                    node = try ast.Node.createPlus(self.allocator, node, mode, span);
                 },
                 .question => {
                     try self.advance();
-                    // Check for lazy quantifier (? after ?)
-                    const greedy = self.peek() != .question;
-                    if (!greedy) try self.advance();
-                    node = try ast.Node.createOptional(self.allocator, node, greedy, span);
+                    // Check for possessive (?+) or lazy (??)
+                    const mode: ast.Node.QuantifierMode = if (self.peek() == .plus) blk: {
+                        try self.advance();
+                        break :blk .possessive;
+                    } else if (self.peek() == .question) blk: {
+                        try self.advance();
+                        break :blk .lazy;
+                    } else .greedy;
+                    node = try ast.Node.createOptional(self.allocator, node, mode, span);
                 },
                 .lbrace => {
                     try self.advance(); // consume {
@@ -513,10 +536,15 @@ pub const Parser = struct {
                     }
 
                     const bounds = ast.RepeatBounds.init(min, max);
-                    // Check for lazy quantifier (? after {m,n})
-                    const greedy = self.peek() != .question;
-                    if (!greedy) try self.advance();
-                    node = try ast.Node.createRepeat(self.allocator, node, bounds, greedy, span);
+                    // Check for possessive ({n,m}+) or lazy ({n,m}?)
+                    const mode: ast.Node.QuantifierMode = if (self.peek() == .plus) blk: {
+                        try self.advance();
+                        break :blk .possessive;
+                    } else if (self.peek() == .question) blk: {
+                        try self.advance();
+                        break :blk .lazy;
+                    } else .greedy;
+                    node = try ast.Node.createRepeat(self.allocator, node, bounds, mode, span);
                 },
                 else => break,
             }
@@ -637,6 +665,38 @@ pub const Parser = struct {
                 return ast.Node.createCharClass(self.allocator, .{
                     .ranges = ranges,
                     .negated = common.CharClasses.non_whitespace.negated,
+                }, self.currentFlags().case_insensitive, token.span);
+            },
+            .escape_h => {
+                try self.advance();
+                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.horizontal_whitespace.ranges);
+                return ast.Node.createCharClass(self.allocator, .{
+                    .ranges = ranges,
+                    .negated = common.CharClasses.horizontal_whitespace.negated,
+                }, self.currentFlags().case_insensitive, token.span);
+            },
+            .escape_H => {
+                try self.advance();
+                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_horizontal_whitespace.ranges);
+                return ast.Node.createCharClass(self.allocator, .{
+                    .ranges = ranges,
+                    .negated = common.CharClasses.non_horizontal_whitespace.negated,
+                }, self.currentFlags().case_insensitive, token.span);
+            },
+            .escape_v => {
+                try self.advance();
+                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.vertical_whitespace.ranges);
+                return ast.Node.createCharClass(self.allocator, .{
+                    .ranges = ranges,
+                    .negated = common.CharClasses.vertical_whitespace.negated,
+                }, self.currentFlags().case_insensitive, token.span);
+            },
+            .escape_V => {
+                try self.advance();
+                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_vertical_whitespace.ranges);
+                return ast.Node.createCharClass(self.allocator, .{
+                    .ranges = ranges,
+                    .negated = common.CharClasses.non_vertical_whitespace.negated,
                 }, self.currentFlags().case_insensitive, token.span);
             },
             .escape_b => {
@@ -971,6 +1031,8 @@ pub const Parser = struct {
         const byte_value: u8 = switch (self.current_token.token_type) {
             .literal => self.current_token.value,
             .escape_char => self.current_token.value,
+            // Inside character classes, special chars like . * + ? are literal
+            .dot, .star, .plus, .question, .pipe, .caret, .dollar => self.current_token.value,
             else => return null,
         };
 
@@ -1121,7 +1183,7 @@ pub const Parser = struct {
 };
 
 test "lexer basic tokens" {
-    var lexer = Lexer.init("a*b+c?");
+    var lexer = Lexer.init("a*b+c?", .{});
 
     const t1 = try lexer.next();
     try std.testing.expectEqual(TokenType.literal, t1.token_type);
@@ -1145,7 +1207,7 @@ test "lexer basic tokens" {
 }
 
 test "lexer escape sequences" {
-    var lexer = Lexer.init("\\d\\w\\s\\n");
+    var lexer = Lexer.init("\\d\\w\\s\\n", .{});
 
     const t1 = try lexer.next();
     try std.testing.expectEqual(TokenType.escape_d, t1.token_type);

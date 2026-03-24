@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const common = @import("common.zig");
 const unicode_tables = @import("unicode_tables.zig");
+const vm = @import("vm.zig");
 
 /// Backtracking-based regex engine
 /// Supports: lazy quantifiers, lookahead/lookbehind, backreferences
@@ -31,6 +32,8 @@ pub const BacktrackEngine = struct {
     flags: common.CompileFlags,
     input: []const u8,
     captures: []CaptureGroup,
+    /// Centralized pre-allocated stack for O(1) backtracking state saves (Zero-allocation hot path)
+    state_stack: std.ArrayList(CaptureGroup),
     /// If true, lazy quantifiers will not backtrack (used in find() to prefer different positions over more matches)
     disable_lazy_backtrack: bool,
     /// ReDoS protection: count of matching steps
@@ -60,6 +63,7 @@ pub const BacktrackEngine = struct {
             .flags = flags,
             .input = &[_]u8{},
             .captures = captures,
+            .state_stack = std.ArrayList(CaptureGroup).initCapacity(allocator, 0) catch unreachable,
             .disable_lazy_backtrack = false,
             .step_count = 0,
             .max_steps = DEFAULT_MAX_STEPS,
@@ -68,6 +72,7 @@ pub const BacktrackEngine = struct {
 
     pub fn deinit(self: *BacktrackEngine) void {
         self.allocator.free(self.captures);
+        self.state_stack.deinit(self.allocator);
     }
 
     /// Test if pattern matches entire input
@@ -155,13 +160,55 @@ pub const BacktrackEngine = struct {
             .plus => self.matchPlus(node.data.plus, pos),
             .optional => self.matchOptional(node.data.optional, pos),
             .repeat => self.matchRepeat(node.data.repeat, pos),
-            .char_class => self.matchCharClass(node.data.char_class.class, pos),
-            .group => self.matchGroup(node.data.group, pos),
-            .anchor => self.matchAnchor(node.data, pos),
+            .char_class => {
+                const class = node.data.char_class.class;
+                if (pos >= self.input.len) return null;
+
+                const char_result = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+                const matches = class.matches(char_result.codepoint);
+
+                if (matches) {
+                    return pos + char_result.len;
+                } else {
+                    return null;
+                }
+            },
+            .group => self.matchNode(node.data.group.child, pos),
+            .anchor => blk: {
+                const anchor_data = node.data.anchor;
+                break :blk switch (anchor_data.type) {
+                    .start_line => {
+                        if (pos == 0) break :blk pos;
+                        if (anchor_data.multiline and pos > 0 and self.input[pos - 1] == '\n') break :blk pos;
+                        break :blk null;
+                    },
+                    .end_line => {
+                        if (pos == self.input.len) break :blk pos;
+                        if (anchor_data.multiline and pos < self.input.len and self.input[pos] == '\n') break :blk pos;
+                        break :blk null;
+                    },
+                    .start_text => if (pos == 0) pos else null,
+                    .end_text => if (pos == self.input.len) pos else null,
+                    .word_boundary => {
+                        const before_cp = decodeUtf8Backward(self.input, pos);
+                        const after_cp = decodeUtf8Forward(self.input, pos);
+                        const before_is_word = if (before_cp) |cp| unicode_tables.isWordChar(cp, self.flags.unicode) else false;
+                        const after_is_word = if (after_cp) |cp| unicode_tables.isWordChar(cp, self.flags.unicode) else false;
+                        break :blk if (before_is_word != after_is_word) pos else null;
+                    },
+                    .non_word_boundary => {
+                        const before_cp = decodeUtf8Backward(self.input, pos);
+                        const after_cp = decodeUtf8Forward(self.input, pos);
+                        const before_is_word = if (before_cp) |cp| unicode_tables.isWordChar(cp, self.flags.unicode) else false;
+                        const after_is_word = if (after_cp) |cp| unicode_tables.isWordChar(cp, self.flags.unicode) else false;
+                        break :blk if (before_is_word == after_is_word) pos else null;
+                    },
+                };
+            },
             .empty => pos,
             .lookahead => self.matchLookahead(node.data.lookahead, pos),
             .lookbehind => self.matchLookbehind(node.data.lookbehind, pos),
-            .backref => self.matchBackreference(node.data.backref, pos),
+            .backref => self.matchBackref(node.data.backref, pos),
         };
     }
 
@@ -214,15 +261,14 @@ pub const BacktrackEngine = struct {
             self.collectAllMatches(concat.left, pos, &left_positions) catch return null;
 
             for (left_positions.items) |left_end| {
-                const saved_captures = self.allocator.alloc(CaptureGroup, self.captures.len) catch continue;
-                defer self.allocator.free(saved_captures);
-                @memcpy(saved_captures, self.captures);
+                // Zero-allocation state save using the centralized stack
+                const stack_base = self.pushState() catch continue;
 
                 if (self.matchNode(concat.right, left_end)) |result| {
                     return result;
                 }
 
-                @memcpy(self.captures, saved_captures);
+                self.popState(stack_base);
             }
             return null;
         } else {
@@ -255,7 +301,13 @@ pub const BacktrackEngine = struct {
         switch (node.node_type) {
             .star => {
                 const quant = node.data.star;
-                if (quant.greedy) {
+
+                // Possessive quantifiers: collect only maximal match
+                if (quant.mode == .possessive) {
+                    return try self.collectPossessiveStarMatches(quant.child, pos, positions);
+                }
+
+                if (quant.mode == .greedy) {
                     // Greedy: try maximal first, then backtrack
                     try self.collectGreedyStarMatches(quant.child, pos, positions);
                 } else {
@@ -265,10 +317,16 @@ pub const BacktrackEngine = struct {
             },
             .plus => {
                 const quant = node.data.plus;
+
+                // Possessive quantifiers: collect only maximal match
+                if (quant.mode == .possessive) {
+                    return try self.collectPossessivePlusMatches(quant.child, pos, positions);
+                }
+
                 // Must match at least once
                 const first_match = self.matchNode(quant.child, pos) orelse return;
 
-                if (quant.greedy) {
+                if (quant.mode == .greedy) {
                     // Greedy: try maximal first
                     try self.collectGreedyStarMatches(quant.child, first_match, positions);
                 } else {
@@ -282,7 +340,13 @@ pub const BacktrackEngine = struct {
             },
             .optional => {
                 const quant = node.data.optional;
-                if (quant.greedy) {
+
+                // Possessive quantifiers: collect only maximal match
+                if (quant.mode == .possessive) {
+                    return try self.collectPossessiveOptionalMatches(quant.child, pos, positions);
+                }
+
+                if (quant.mode == .greedy) {
                     // Greedy: try matching first, then zero
                     if (self.matchNode(quant.child, pos)) |end| {
                         try positions.append(self.allocator, end);
@@ -301,7 +365,13 @@ pub const BacktrackEngine = struct {
             },
             .repeat => {
                 const repeat = node.data.repeat;
-                if (repeat.greedy) {
+
+                // Possessive quantifiers: collect only maximal match
+                if (repeat.mode == .possessive) {
+                    return try self.collectPossessiveRepeatMatches(repeat, pos, positions);
+                }
+
+                if (repeat.mode == .greedy) {
                     try self.collectGreedyRepeatMatches(repeat, pos, positions);
                 } else {
                     try self.collectLazyRepeatMatches(repeat, pos, positions);
@@ -444,7 +514,7 @@ pub const BacktrackEngine = struct {
     }
 
     fn matchStar(self: *BacktrackEngine, quant: ast.Node.Quantifier, pos: usize) ?usize {
-        if (quant.greedy) {
+        if (quant.mode == .greedy) {
             // Greedy: match as many as possible
             return self.matchStarGreedy(quant.child, pos);
         } else {
@@ -484,7 +554,7 @@ pub const BacktrackEngine = struct {
         // Must match at least once
         const first_match = self.matchNode(quant.child, pos) orelse return null;
 
-        if (quant.greedy) {
+        if (quant.mode == .greedy) {
             return self.matchStarGreedy(quant.child, first_match);
         } else {
             return first_match; // Lazy: just one match
@@ -492,7 +562,7 @@ pub const BacktrackEngine = struct {
     }
 
     fn matchOptional(self: *BacktrackEngine, quant: ast.Node.Quantifier, pos: usize) ?usize {
-        if (quant.greedy) {
+        if (quant.mode == .greedy) {
             // Greedy: try to match first
             if (self.matchNode(quant.child, pos)) |end| {
                 return end;
@@ -517,7 +587,7 @@ pub const BacktrackEngine = struct {
 
         // If no max, behave like star after minimum
         if (max == null) {
-            if (repeat.greedy) {
+            if (repeat.mode == .greedy) {
                 return self.matchStarGreedy(repeat.child, current_pos);
             } else {
                 return current_pos; // Lazy: stop at minimum
@@ -526,7 +596,7 @@ pub const BacktrackEngine = struct {
 
         // Match up to max times
         const max_count = max.?;
-        if (repeat.greedy) {
+        if (repeat.mode == .greedy) {
             // Greedy: try to match as many as possible
             while (i < max_count) : (i += 1) {
                 if (self.matchNode(repeat.child, current_pos)) |next_pos| {
@@ -541,177 +611,169 @@ pub const BacktrackEngine = struct {
         return current_pos;
     }
 
-    fn matchCharClass(self: *BacktrackEngine, char_class: common.CharClass, pos: usize) ?usize {
-        if (pos >= self.input.len) return null;
-
-        // Decode UTF-8 character at current position
-        const utf8_char = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
-        const matches = char_class.matches(utf8_char.codepoint);
-
-        return if (matches) pos + utf8_char.len else null;
+    /// Collect possessive star matches: only maximal match (no backtracking)
+    fn collectPossessiveStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
+        var current_pos = pos;
+        // Match as many times as possible
+        while (self.matchNode(child, current_pos)) |next| {
+            if (next == current_pos) break; // Prevent infinite loop on empty matches
+            current_pos = next;
+        }
+        // Only return the maximal match position
+        try positions.append(self.allocator, current_pos);
     }
 
-    const Utf8Char = struct {
-        codepoint: u21,
-        len: usize,
-    };
+    /// Collect possessive plus matches: only maximal match (no backtracking)
+    fn collectPossessivePlusMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
+        // Must match at least once
+        const first_match = self.matchNode(child, pos) orelse return;
 
-    fn decodeUtf8ForwardWithLen(input: []const u8, pos: usize) ?Utf8Char {
-        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
-        if (pos + len > input.len) return null;
-        const codepoint = std.unicode.utf8Decode(input[pos .. pos + len]) catch return null;
-        return Utf8Char{ .codepoint = codepoint, .len = len };
+        var current_pos = first_match;
+        // Match as many more times as possible
+        while (self.matchNode(child, current_pos)) |next| {
+            if (next == current_pos) break; // Prevent infinite loop
+            current_pos = next;
+        }
+        // Only return the maximal match position
+        try positions.append(self.allocator, current_pos);
     }
 
-    fn matchGroup(self: *BacktrackEngine, group: ast.Node.Group, pos: usize) ?usize {
-        const start_pos = pos;
+    /// Collect possessive optional matches: only maximal match (no backtracking)
+    fn collectPossessiveOptionalMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
+        // Try to match once
+        if (self.matchNode(child, pos)) |next| {
+            // Matched: return the match position only
+            try positions.append(self.allocator, next);
+        } else {
+            // Didn't match: return original position only
+            try positions.append(self.allocator, pos);
+        }
+    }
 
-        const end_pos = self.matchNode(group.child, pos) orelse return null;
+    /// Collect possessive repeat matches: only maximal match (no backtracking)
+    fn collectPossessiveRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(usize)) !void {
+        const min = repeat.bounds.min;
+        const max = repeat.bounds.max;
 
-        // Save capture if this is a capturing group
-        if (group.capture_index) |index| {
-            if (index > 0 and index <= self.captures.len) {
-                self.captures[index - 1] = .{
-                    .start = start_pos,
-                    .end = end_pos,
-                    .matched = true,
-                };
+        var current_pos = pos;
+        var count: usize = 0;
+
+        // Match minimum required times
+        while (count < min) : (count += 1) {
+            if (self.matchNode(repeat.child, current_pos)) |next| {
+                if (next == current_pos) break; // Prevent infinite loop
+                current_pos = next;
+            } else {
+                // Failed to match minimum - no match at all
+                return;
             }
         }
 
-        return end_pos;
+        // Match as many more times as possible (up to max if specified)
+        if (max) |max_count| {
+            while (count < max_count) : (count += 1) {
+                if (self.matchNode(repeat.child, current_pos)) |next| {
+                    if (next == current_pos) break;
+                    current_pos = next;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // No max: match as many as possible
+            while (self.matchNode(repeat.child, current_pos)) |next| {
+                if (next == current_pos) break;
+                current_pos = next;
+            }
+        }
+
+        // Only return the maximal match position
+        try positions.append(self.allocator, current_pos);
     }
 
-    fn matchAnchor(self: *BacktrackEngine, anchor_data: ast.Node.NodeData, pos: usize) ?usize {
-        const anchor_type = anchor_data.anchor.type;
-        const multiline = anchor_data.anchor.multiline;
-        const matches = switch (anchor_type) {
-            .start_line => if (multiline)
-                pos == 0 or (pos > 0 and self.input[pos - 1] == '\n')
-            else
-                pos == 0,
-            .end_line => if (multiline)
-                pos == self.input.len or (pos < self.input.len and self.input[pos] == '\n')
-            else
-                pos == self.input.len,
-            .start_text => pos == 0,
-            .end_text => pos == self.input.len,
-            .word_boundary => self.isWordBoundary(pos),
-            .non_word_boundary => !self.isWordBoundary(pos),
-        };
-
-        return if (matches) pos else null;
-    }
-
-    fn isWordBoundary(self: *BacktrackEngine, pos: usize) bool {
-        const input = self.input;
-        const use_unicode = self.flags.unicode;
-
-        // Decode UTF-8 codepoints
-        const before_cp = if (pos > 0) decodeUtf8Backward(input, pos) else null;
-        const after_cp = if (pos < input.len) decodeUtf8Forward(input, pos) else null;
-
-        const before_is_word = if (before_cp) |cp| unicode_tables.isWordChar(cp, use_unicode) else false;
-        const after_is_word = if (after_cp) |cp| unicode_tables.isWordChar(cp, use_unicode) else false;
-
-        return before_is_word != after_is_word;
+    fn decodeUtf8ForwardWithLen(input: []const u8, pos: usize) ?struct { codepoint: u21, len: u8 } {
+        if (pos >= input.len) return null;
+        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
+        if (pos + len > input.len) return null;
+        const codepoint = std.unicode.utf8Decode(input[pos .. pos + len]) catch return null;
+        return .{ .codepoint = codepoint, .len = len };
     }
 
     fn decodeUtf8Forward(input: []const u8, pos: usize) ?u21 {
-        const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
-        if (pos + len > input.len) return null;
-        return std.unicode.utf8Decode(input[pos .. pos + len]) catch null;
+        const result = decodeUtf8ForwardWithLen(input, pos) orelse return null;
+        return result.codepoint;
     }
 
     fn decodeUtf8Backward(input: []const u8, pos: usize) ?u21 {
+        if (pos == 0) return null;
         var i = pos - 1;
         while (i > 0 and (input[i] & 0xC0) == 0x80) : (i -= 1) {}
         return decodeUtf8Forward(input, i);
     }
 
-    fn matchLookahead(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {
-        // Lookahead: test if pattern matches at current position without consuming input
-        const matches = self.matchNode(assertion.child, pos) != null;
+    /// Push current captures to the stack in O(1) amortized time
+    inline fn pushState(self: *BacktrackEngine) !usize {
+        const stack_base = self.state_stack.items.len;
+        try self.state_stack.appendSlice(self.allocator, self.captures);
+        return stack_base;
+    }
 
-        // For positive lookahead (?=...), return pos if matched
-        // For negative lookahead (?!...), return pos if NOT matched
-        const success = if (assertion.positive) matches else !matches;
-        return if (success) pos else null;
+    /// Pop captures from the stack back to current state
+    inline fn popState(self: *BacktrackEngine, stack_base: usize) void {
+        const saved_slice = self.state_stack.items[stack_base .. stack_base + self.captures.len];
+        @memcpy(self.captures, saved_slice);
+        self.state_stack.shrinkRetainingCapacity(stack_base);
+    }
+
+    fn matchBackref(self: *BacktrackEngine, backref: ast.Node.Backreference, pos: usize) ?usize {
+        if (backref.index == 0 or backref.index > self.captures.len) return null;
+        const cap = self.captures[backref.index - 1];
+        if (!cap.matched) return null;
+
+        const expected_str = self.input[cap.start..cap.end];
+        if (pos + expected_str.len > self.input.len) return null;
+
+        const actual_str = self.input[pos .. pos + expected_str.len];
+
+        const is_match = if (self.flags.case_insensitive)
+            std.ascii.eqlIgnoreCase(expected_str, actual_str)
+        else
+            std.mem.eql(u8, expected_str, actual_str);
+
+        if (is_match) {
+            return pos + expected_str.len;
+        }
+        return null;
+    }
+
+    fn matchLookahead(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {
+        const stack_base = self.pushState() catch return null;
+        const matched = self.matchNode(assertion.child, pos) != null;
+        self.popState(stack_base);
+
+        if (matched == assertion.positive) return pos;
+        return null;
     }
 
     fn matchLookbehind(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {
-        // Lookbehind: test if pattern matches BEFORE current position
-        // This is complex because we need to search backwards
+        const stack_base = self.pushState() catch return null;
+        var matched = false;
+        var check_pos = pos;
 
-        if (assertion.positive) {
-            // Positive lookbehind (?<=...): must match immediately before pos
-            // Try matching from various positions before pos
-            var start: usize = 0;
-            while (start <= pos) : (start += 1) {
-                if (self.matchNode(assertion.child, start)) |end| {
-                    if (end == pos) {
-                        // Pattern matched and ended exactly at current position
-                        return pos;
-                    }
+        while (true) {
+            self.popState(stack_base);
+            _ = self.pushState() catch break;
+            if (self.matchNode(assertion.child, check_pos)) |end_pos| {
+                if (end_pos == pos) {
+                    matched = true;
+                    break;
                 }
             }
-            return null;
-        } else {
-            // Negative lookbehind (?<!...): must NOT match immediately before pos
-            var start: usize = 0;
-            while (start <= pos) : (start += 1) {
-                if (self.matchNode(assertion.child, start)) |end| {
-                    if (end == pos) {
-                        // Pattern matched, so negative lookbehind fails
-                        return null;
-                    }
-                }
-            }
-            // No match found, so negative lookbehind succeeds
-            return pos;
+            if (check_pos == 0) break;
+            check_pos -= 1;
         }
-    }
-
-    fn matchBackreference(self: *BacktrackEngine, backref: ast.Node.Backreference, pos: usize) ?usize {
-        // Backreference: match the same text that was captured by a previous group
-        const capture_index = backref.index;
-
-        // Validate capture index (1-based)
-        if (capture_index == 0 or capture_index > self.captures.len) {
-            return null;
-        }
-
-        const capture = self.captures[capture_index - 1];
-
-        // If capture group hasn't matched yet, backreference fails
-        if (!capture.matched) {
-            return null;
-        }
-
-        // Get the captured text
-        const captured_text = self.input[capture.start..capture.end];
-
-        // Try to match the same text at current position
-        if (pos + captured_text.len > self.input.len) {
-            return null;
-        }
-
-        const text_to_match = self.input[pos .. pos + captured_text.len];
-
-        if (self.flags.case_insensitive) {
-            // Case-insensitive comparison
-            for (captured_text, text_to_match) |a, b| {
-                const a_lower = if (a >= 'A' and a <= 'Z') a + ('a' - 'A') else a;
-                const b_lower = if (b >= 'A' and b <= 'Z') b + ('a' - 'A') else b;
-                if (a_lower != b_lower) return null;
-            }
-            return pos + captured_text.len;
-        }
-
-        if (std.mem.eql(u8, captured_text, text_to_match)) {
-            return pos + captured_text.len;
-        }
-
+        self.popState(stack_base);
+        if (matched == assertion.positive) return pos;
         return null;
     }
 };

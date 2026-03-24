@@ -149,6 +149,46 @@ pub const CharClasses = struct {
         .negated = true,
     };
 
+    /// Horizontal whitespace: [ \t]
+    pub const horizontal_whitespace = CharClass{
+        .ranges = &[_]CharRange{
+            CharRange.init(' ', ' '),
+            CharRange.init('\t', '\t'),
+        },
+        .negated = false,
+    };
+
+    /// Non-horizontal whitespace: [^ \t]
+    pub const non_horizontal_whitespace = CharClass{
+        .ranges = &[_]CharRange{
+            CharRange.init(' ', ' '),
+            CharRange.init('\t', '\t'),
+        },
+        .negated = true,
+    };
+
+    /// Vertical whitespace: [\n\r\f\v]
+    pub const vertical_whitespace = CharClass{
+        .ranges = &[_]CharRange{
+            CharRange.init('\n', '\n'),
+            CharRange.init('\r', '\r'),
+            CharRange.init(0x0C, 0x0C), // \f
+            CharRange.init(0x0B, 0x0B), // \v
+        },
+        .negated = false,
+    };
+
+    /// Non-vertical whitespace: [^\n\r\f\v]
+    pub const non_vertical_whitespace = CharClass{
+        .ranges = &[_]CharRange{
+            CharRange.init('\n', '\n'),
+            CharRange.init('\r', '\r'),
+            CharRange.init(0x0C, 0x0C), // \f
+            CharRange.init(0x0B, 0x0B), // \v
+        },
+        .negated = true,
+    };
+
     // POSIX Character Classes
     // These follow the POSIX standard for character class names
 
