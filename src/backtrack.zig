@@ -173,7 +173,7 @@ pub const BacktrackEngine = struct {
                     return null;
                 }
             },
-            .group => self.matchNode(node.data.group.child, pos),
+            .group => self.matchGroup(node.data.group, pos),
             .anchor => blk: {
                 const anchor_data = node.data.anchor;
                 break :blk switch (anchor_data.type) {
@@ -723,6 +723,22 @@ pub const BacktrackEngine = struct {
         const saved_slice = self.state_stack.items[stack_base .. stack_base + self.captures.len];
         @memcpy(self.captures, saved_slice);
         self.state_stack.shrinkRetainingCapacity(stack_base);
+    }
+
+    fn matchGroup(self: *BacktrackEngine, group: ast.Node.Group, pos: usize) ?usize {
+        const end_pos = self.matchNode(group.child, pos) orelse return null;
+
+        if (group.capture_index) |cap_idx| {
+            if (cap_idx > 0 and cap_idx <= self.captures.len) {
+                self.captures[cap_idx - 1] = .{
+                    .start = pos,
+                    .end = end_pos,
+                    .matched = true,
+                };
+            }
+        }
+
+        return end_pos;
     }
 
     fn matchBackref(self: *BacktrackEngine, backref: ast.Node.Backreference, pos: usize) ?usize {
