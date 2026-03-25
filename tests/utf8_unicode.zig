@@ -154,18 +154,17 @@ test "UTF-8: non-capturing groups with Unicode" {
 }
 
 // Document current limitations
-test "UTF-8: known limitation - dot is byte-based" {
+test "UTF-8: dot matches multi-byte characters" {
     const allocator = std.testing.allocator;
-    var regex = try Regex.compile(allocator, "^.$");
+    var regex = try Regex.compile(allocator, ".");
     defer regex.deinit();
 
     // Single ASCII character
     try std.testing.expect(try regex.isMatch("a"));
 
-    // Multi-byte character - currently fails because . matches one byte
-    // In Unicode mode, . should match the entire character
-    try std.testing.expect(!try regex.isMatch("é")); // é is 2 bytes
-    try std.testing.expect(!try regex.isMatch("你")); // 你 is 3 bytes
+    // Multi-byte characters - dot now correctly matches entire UTF-8 characters
+    try std.testing.expect(try regex.isMatch("é")); // é is 2 bytes
+    try std.testing.expect(try regex.isMatch("你")); // 你 is 3 bytes
 }
 
 test "UTF-8: known limitation - \\w is ASCII-only" {

@@ -238,10 +238,13 @@ pub const BacktrackEngine = struct {
     fn matchAny(self: *BacktrackEngine, any_data: ast.Node.NodeData, pos: usize) ?usize {
         if (pos >= self.input.len) return null;
 
-        const c = self.input[pos];
+        // Decode UTF-8 character at current position
+        const utf8_char = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+        const c = utf8_char.codepoint;
+
         if (!any_data.any.dot_all and c == '\n') return null;
 
-        return pos + 1;
+        return pos + utf8_char.len;
     }
 
     fn matchConcat(self: *BacktrackEngine, concat: ast.Node.Concat, pos: usize) ?usize {

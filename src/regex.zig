@@ -79,11 +79,6 @@ pub const Regex = struct {
         // Get the final flags from the parser (may have been modified by (*UCP), (*UTF), etc.)
         const final_flags = p.currentFlags();
 
-        // Static ReDoS analysis - rejects CRITICAL risk patterns (consecutive quantifiers)
-        // Thompson NFA is immune, but backtracking engine needs compile-time validation
-        const pattern_analyzer = @import("pattern_analyzer.zig");
-        try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
-
         // Store owned copy of pattern
         const owned_pattern = try allocator.dupe(u8, pattern);
         errdefer allocator.free(owned_pattern);
@@ -102,6 +97,11 @@ pub const Regex = struct {
         const needs_backtracking = requiresBacktracking(tree.root);
 
         if (needs_backtracking) {
+            // Static ReDoS analysis - rejects CRITICAL risk patterns (consecutive quantifiers)
+            // We ONLY run this if we are forced to use the backtracking engine.
+            const pattern_analyzer = @import("pattern_analyzer.zig");
+            try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
+
             // Use backtracking engine
             var backtrack_engine = try backtrack.BacktrackEngine.init(allocator, tree.root, tree.capture_count, final_flags);
             errdefer backtrack_engine.deinit();
@@ -733,8 +733,9 @@ test "compile empty pattern" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const result = Regex.compile(allocator, "");
-    try std.testing.expectError(RegexError.EmptyPattern, result);
+    var regex = try Regex.compile(allocator, "");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch(""));
 }
 
 test "compile basic pattern" {
@@ -872,20 +873,27 @@ test "split" {
     try std.testing.expectEqualStrings("c", parts[2]);
 }
 
-test "compile rejects dangerous nested quantifiers" {
-    const allocator = std.testing.allocator;
+test "compile accepts nested quantifiers with Thompson NFA" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
-    // This pattern should be rejected as critical risk
-    const result = Regex.compile(allocator, "(a+)+");
-    try std.testing.expectError(RegexError.PatternTooComplex, result);
+    // Thompson NFA can handle this safely in O(N*M) time
+    var regex = try Regex.compile(allocator, "(a+)+");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("aaa"));
 }
 
-test "compile rejects nested stars" {
-    const allocator = std.testing.allocator;
+test "compile accepts nested stars with Thompson NFA" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
-    // This pattern should be rejected
-    const result = Regex.compile(allocator, "(a*)*");
-    try std.testing.expectError(RegexError.PatternTooComplex, result);
+    // Thompson NFA can handle this safely
+    var regex = try Regex.compile(allocator, "(a*)*");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch(""));
+    try std.testing.expect(try regex.isMatch("aaa"));
 }
 
 test "compile accepts safe complex patterns" {

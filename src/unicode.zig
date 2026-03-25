@@ -603,8 +603,8 @@ test "unicode: CJK and extended ranges" {
     try std.testing.expect(matchesProperty(0xAC00, .Letter));
 
     // Arabic
-    try std.testing.expectEqual(GeneralCategory.Lo, getGeneralCategory(0x0600));
-    try std.testing.expect(matchesProperty(0x0600, .Letter));
+    try std.testing.expectEqual(GeneralCategory.Lo, getGeneralCategory(0x0627));
+    try std.testing.expect(matchesProperty(0x0627, .Letter));
 }
 
 // Stress and integration tests

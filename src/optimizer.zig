@@ -39,22 +39,21 @@ pub const Optimizer = struct {
     pub fn analyze(self: *Optimizer, root: *ast.Node) !OptimizationInfo {
         var info = OptimizationInfo{};
 
-        // Check for anchors
-        if (root.node_type == .concat) {
-            const concat = root.data.concat;
-            // Check if starts with ^
-            if (concat.left.node_type == .anchor and
-                concat.left.data.anchor.type == .start_line)
-            {
-                info.anchored_start = true;
-            }
-        } else if (root.node_type == .anchor) {
-            if (root.data.anchor.type == .start_line) {
-                info.anchored_start = true;
-            }
-            if (root.data.anchor.type == .end_line) {
-                info.anchored_end = true;
-            }
+        // Check for anchors - traverse to leftmost/rightmost leaves
+        var current_start = root;
+        while (current_start.node_type == .concat) {
+            current_start = current_start.data.concat.left;
+        }
+        if (current_start.node_type == .anchor and current_start.data.anchor.type == .start_line) {
+            info.anchored_start = true;
+        }
+
+        var current_end = root;
+        while (current_end.node_type == .concat) {
+            current_end = current_end.data.concat.right;
+        }
+        if (current_end.node_type == .anchor and current_end.data.anchor.type == .end_line) {
+            info.anchored_end = true;
         }
 
         // Extract literal prefix

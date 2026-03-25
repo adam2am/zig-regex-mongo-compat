@@ -30,18 +30,28 @@ test "parser: deeply nested groups" {
     try std.testing.expect(try regex.isMatch("a"));
 }
 
-test "parser: consecutive quantifiers rejected by analyzer" {
-    const allocator = std.testing.allocator;
-    // a** parses as (a*)* which is rejected as nested quantifiers
-    const result = Regex.compile(allocator, "a**");
-    try std.testing.expectError(RegexError.PatternTooComplex, result);
+test "parser: consecutive quantifiers accepted by Thompson NFA" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Thompson NFA can handle this safely
+    var regex = try Regex.compile(allocator, "a**");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch(""));
+    try std.testing.expect(try regex.isMatch("aaa"));
 }
 
-test "parser: quantifier on quantifier rejected by analyzer" {
-    const allocator = std.testing.allocator;
-    // a+* parses as (a+)* which is rejected as nested quantifiers
-    const result = Regex.compile(allocator, "a+*");
-    try std.testing.expectError(RegexError.PatternTooComplex, result);
+test "parser: quantifier on quantifier accepted by Thompson NFA" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Thompson NFA can handle this safely
+    var regex = try Regex.compile(allocator, "a+*");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch(""));
+    try std.testing.expect(try regex.isMatch("aaa"));
 }
 
 test "parser: empty alternation branch is valid" {
