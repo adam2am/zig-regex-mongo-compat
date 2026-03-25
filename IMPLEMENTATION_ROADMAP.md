@@ -11,7 +11,7 @@
 | # | Feature | Complexity | Effort | Status |
 |---|---------|-----------|--------|--------|
 | 1 | `(?|...)` Branch Reset Groups | LOW | 4-8h | ✅ Complete |
-| 2 | `(?(1)yes|no)` Conditional Patterns | MEDIUM | 1-2d | 🔄 In Progress |
+| 2 | `(?(1)yes|no)` Conditional Patterns | MEDIUM | 1-2d | ✅ Complete |
 | 3 | `\X` Extended Grapheme Clusters | MEDIUM-HIGH | 2-4d | ⬜ Not Started |
 | 4 | `(?R)` Recursive Patterns | HIGH | 4-7d | ⬜ Not Started |
 
@@ -49,7 +49,7 @@
 **Priority:** 🟡 Medium  
 **Complexity:** MEDIUM  
 **Estimated Effort:** 1-2 days  
-**Status:** 🔄 In Progress
+**Status:** ✅ Complete
 
 ### 📖 Specification
 
