@@ -10,8 +10,8 @@
 
 | # | Feature | Complexity | Effort | Status |
 |---|---------|-----------|--------|--------|
-| 1 | `(?|...)` Branch Reset Groups | LOW | 4-8h | ⬜ Not Started |
-| 2 | `(?(1)yes|no)` Conditional Patterns | MEDIUM | 1-2d | ⬜ Not Started |
+| 1 | `(?|...)` Branch Reset Groups | LOW | 4-8h | ✅ Complete |
+| 2 | `(?(1)yes|no)` Conditional Patterns | MEDIUM | 1-2d | 🔄 In Progress |
 | 3 | `\X` Extended Grapheme Clusters | MEDIUM-HIGH | 2-4d | ⬜ Not Started |
 | 4 | `(?R)` Recursive Patterns | HIGH | 4-7d | ⬜ Not Started |
 
@@ -22,7 +22,34 @@
 **Priority:** 🟢 Quick Win  
 **Complexity:** LOW  
 **Estimated Effort:** 4-8 hours  
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
+
+### ✅ Implementation Complete
+
+**Commit:** `0d2cc31`  
+**Tests:** 481/481 passing (100%)  
+**Files Modified:** 4 files, 783 insertions
+
+**What was implemented:**
+- Added `reset_stack` to Parser struct (follows `flag_stack` pattern)
+- Implemented `parseAlternationWithReset()` function
+- Detect `(?|` syntax and reset `capture_count` at each `|`
+- 9 comprehensive tests covering all cases
+
+**Architecture:**
+- Stack-based state management
+- Separate function for reset behavior
+- Zero impact on existing code
+- Handles nesting perfectly via stack
+
+---
+
+## 2️⃣ Conditional Patterns `(?(condition)yes|no)`
+
+**Priority:** 🟡 Medium  
+**Complexity:** MEDIUM  
+**Estimated Effort:** 1-2 days  
+**Status:** 🔄 In Progress
 
 ### 📖 Specification
 
@@ -546,14 +573,14 @@ When adding tests, follow the Zig test framework pattern:
 - ✅ **\p{Any}** — Complete
 - ✅ **Atomic groups (?>...)** — Complete
 - ✅ **Optimizer bug fix** — Complete
-- ⬜ **Branch Reset** — Not Started
-- ⬜ **Conditionals** — Not Started
+- ✅ **Branch Reset** — Complete (481 tests passing)
+- 🔄 **Conditionals** — In Progress
 - ⬜ **\X Grapheme Clusters** — Not Started
 - ⬜ **Recursion** — Not Started
 
 ### Milestones
-- [ ] **Milestone 1:** Branch Reset complete (4-8 hours)
-- [ ] **Milestone 2:** Conditionals complete (1-2 days)
+- [x] **Milestone 1:** Branch Reset complete (4-8 hours) ✅
+- [ ] **Milestone 2:** Conditionals complete (1-2 days) 🔄
 - [ ] **Milestone 3:** \X Grapheme Clusters complete (2-4 days)
 - [ ] **Milestone 4:** Recursion complete (4-7 days)
 
