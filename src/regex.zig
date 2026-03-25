@@ -91,7 +91,7 @@ pub const Regex = struct {
         // Collect named captures from AST
         var named_captures = std.StringHashMap(usize).init(allocator);
         errdefer named_captures.deinit();
-        try collectNamedCaptures(tree.root, &named_captures);
+        try collectNamedCaptures(allocator, tree.root, &named_captures);
 
         // Detect if backtracking is required
         const needs_backtracking = requiresBacktracking(tree.root);
@@ -163,10 +163,10 @@ pub const Regex = struct {
 
         self.opt_info.deinit(self.allocator);
 
-        // Free named capture keys and deinit map
-        var it = self.named_captures.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
+        // Named capture keys were duplicated using the regex allocator, so we must free them
+        var it = self.named_captures.keyIterator();
+        while (it.next()) |key_ptr| {
+            self.allocator.free(key_ptr.*);
         }
         self.named_captures.deinit();
     }
@@ -694,38 +694,39 @@ fn requiresBacktracking(node: *ast.Node) bool {
 }
 
 /// Helper function to recursively collect named captures from AST
-fn collectNamedCaptures(node: *ast.Node, map: *std.StringHashMap(usize)) !void {
+fn collectNamedCaptures(allocator: std.mem.Allocator, node: *ast.Node, map: *std.StringHashMap(usize)) !void {
     switch (node.node_type) {
         .group => {
             const group = node.data.group;
             if (group.name) |name| {
                 if (group.capture_index) |index| {
-                    try map.put(name, index);
+                    const name_dup = try allocator.dupe(u8, name);
+                    try map.put(name_dup, index);
                 }
             }
-            try collectNamedCaptures(group.child, map);
+            try collectNamedCaptures(allocator, group.child, map);
         },
         .concat => {
-            try collectNamedCaptures(node.data.concat.left, map);
-            try collectNamedCaptures(node.data.concat.right, map);
+            try collectNamedCaptures(allocator, node.data.concat.left, map);
+            try collectNamedCaptures(allocator, node.data.concat.right, map);
         },
         .alternation => {
-            try collectNamedCaptures(node.data.alternation.left, map);
-            try collectNamedCaptures(node.data.alternation.right, map);
+            try collectNamedCaptures(allocator, node.data.alternation.left, map);
+            try collectNamedCaptures(allocator, node.data.alternation.right, map);
         },
-        .star => try collectNamedCaptures(node.data.star.child, map),
-        .plus => try collectNamedCaptures(node.data.plus.child, map),
-        .optional => try collectNamedCaptures(node.data.optional.child, map),
-        .repeat => try collectNamedCaptures(node.data.repeat.child, map),
+        .star => try collectNamedCaptures(allocator, node.data.star.child, map),
+        .plus => try collectNamedCaptures(allocator, node.data.plus.child, map),
+        .optional => try collectNamedCaptures(allocator, node.data.optional.child, map),
+        .repeat => try collectNamedCaptures(allocator, node.data.repeat.child, map),
         .lookahead, .lookbehind => {
             const child = switch (node.node_type) {
                 .lookahead => node.data.lookahead.child,
                 .lookbehind => node.data.lookbehind.child,
                 else => unreachable,
             };
-            try collectNamedCaptures(child, map);
+            try collectNamedCaptures(allocator, child, map);
         },
-        .atomic_group => try collectNamedCaptures(node.data.atomic_group.child, map),
+        .atomic_group => try collectNamedCaptures(allocator, node.data.atomic_group.child, map),
         else => {}, // Literals, character classes, anchors, backreferences don't contain groups
     }
 }

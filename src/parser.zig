@@ -270,16 +270,26 @@ pub const Lexer = struct {
     }
 };
 
+/// Parser state for lifecycle tracking
+const ParserState = enum {
+    /// Parsing in progress, arena available for allocations
+    parsing,
+    /// Arena transferred to AST, no more allocations allowed
+    finished,
+};
+
 /// Parser for regex patterns
 pub const Parser = struct {
     lexer: Lexer,
     allocator: std.mem.Allocator,
+    ast_arena: ?std.heap.ArenaAllocator,
     current_token: Token,
     capture_count: usize,
     nesting_depth: usize,
     recursion_depth: usize,
     flag_stack: std.ArrayList(common.CompileFlags),
     reset_stack: std.ArrayList(usize), // Track capture_count at (?| entry for branch reset groups
+    state: ParserState = .parsing,
 
     /// Maximum nesting depth to prevent stack overflow from patterns like (((((...
     pub const MAX_NESTING_DEPTH: usize = 100;
@@ -292,6 +302,8 @@ pub const Parser = struct {
         var lexer = Lexer.init(pattern, flags);
         const first_token = try lexer.next();
 
+        const ast_arena = std.heap.ArenaAllocator.init(allocator);
+
         var flag_stack = try std.ArrayList(common.CompileFlags).initCapacity(allocator, 1);
         try flag_stack.append(allocator, flags); // Push base flags
 
@@ -300,16 +312,46 @@ pub const Parser = struct {
         return .{
             .lexer = lexer,
             .allocator = allocator,
+            .ast_arena = ast_arena,
             .current_token = first_token,
             .capture_count = 0,
             .nesting_depth = 0,
             .recursion_depth = 0,
             .flag_stack = flag_stack,
             .reset_stack = reset_stack,
+            .state = .parsing,
         };
     }
 
+    /// Returns the allocator for AST nodes, always derived from the struct-owned arena.
+    /// IMPORTANT: Never cache the result — always call this method to get a fresh allocator
+    /// with a valid pointer to the arena inside this struct.
+    /// Panics if called after parse() has completed (state = .finished)
+    fn astAllocator(self: *Parser) std.mem.Allocator {
+        std.debug.assert(self.state == .parsing);
+        return self.ast_arena.?.allocator();
+    }
+
+    /// Creates a character class node from an escape sequence type.
+    /// Eliminates need for 11 separate ranges_* temporary variables.
+    fn createCharClassFromEscape(
+        self: *Parser,
+        comptime class_name: []const u8,
+        token: Token,
+    ) !*ast.Node {
+        const class_info = @field(common.CharClasses, class_name);
+        const ranges = try self.astAllocator().dupe(common.CharRange, class_info.ranges);
+        const flags = self.currentFlags();
+        return ast.Node.createCharClass(self.astAllocator(), .{
+            .ranges = ranges,
+            .negated = class_info.negated,
+        }, flags.case_insensitive, token.span);
+    }
+
     pub fn deinit(self: *Parser) void {
+        if (self.ast_arena) |*arena| {
+            arena.deinit();
+        }
         self.flag_stack.deinit(self.allocator);
         self.reset_stack.deinit(self.allocator);
     }
@@ -336,7 +378,6 @@ pub const Parser = struct {
     /// Parse the entire regex pattern
     pub fn parse(self: *Parser) !ast.AST {
         const root = try self.parseAlternation();
-        errdefer root.destroy(self.allocator);
 
         // Verify all input was consumed
         if (self.peek() != .eof) {
@@ -347,7 +388,14 @@ pub const Parser = struct {
             };
         }
 
-        return ast.AST.init(self.allocator, root, self.capture_count);
+        // Mark as finished BEFORE transferring arena
+        // This prevents any accidental allocations after transfer
+        self.state = .finished;
+
+        // Transfer ownership of the arena to the AST struct
+        const final_arena = self.ast_arena.?;
+        self.ast_arena = null;
+        return ast.AST.init(final_arena, root, self.capture_count);
     }
 
     /// Parse alternation (lowest precedence)
@@ -361,9 +409,6 @@ pub const Parser = struct {
 
         var nodes: std.ArrayList(*ast.Node) = .empty;
         defer nodes.deinit(self.allocator);
-        errdefer {
-            for (nodes.items) |n| n.destroy(self.allocator);
-        }
 
         const first = try self.parseConcat();
         try nodes.append(self.allocator, first);
@@ -393,9 +438,6 @@ pub const Parser = struct {
 
         var nodes: std.ArrayList(*ast.Node) = .empty;
         defer nodes.deinit(self.allocator);
-        errdefer {
-            for (nodes.items) |n| n.destroy(self.allocator);
-        }
 
         const reset_point = self.reset_stack.items[self.reset_stack.items.len - 1];
 
@@ -432,11 +474,6 @@ pub const Parser = struct {
 
         var nodes: std.ArrayList(*ast.Node) = .empty;
         defer nodes.deinit(self.allocator);
-        errdefer {
-            for (nodes.items) |n| {
-                n.destroy(self.allocator);
-            }
-        }
 
         while (true) {
             const token_type = self.peek();
@@ -449,7 +486,7 @@ pub const Parser = struct {
         }
 
         if (nodes.items.len == 0) {
-            return ast.Node.createEmpty(self.allocator, common.Span.init(self.lexer.pos, self.lexer.pos));
+            return ast.Node.createEmpty(self.astAllocator(), common.Span.init(self.lexer.pos, self.lexer.pos));
         }
 
         if (nodes.items.len == 1) {
@@ -470,7 +507,6 @@ pub const Parser = struct {
         defer self.recursion_depth -= 1;
 
         var node = try self.parsePrimary();
-        errdefer node.destroy(self.allocator);
         const start = node.span.start;
 
         while (true) {
@@ -488,7 +524,7 @@ pub const Parser = struct {
                         try self.advance();
                         break :blk .lazy;
                     } else .greedy;
-                    node = try ast.Node.createStar(self.allocator, node, mode, span);
+                    node = try ast.Node.createStar(self.astAllocator(), node, mode, span);
                 },
                 .plus => {
                     try self.advance();
@@ -500,7 +536,7 @@ pub const Parser = struct {
                         try self.advance();
                         break :blk .lazy;
                     } else .greedy;
-                    node = try ast.Node.createPlus(self.allocator, node, mode, span);
+                    node = try ast.Node.createPlus(self.astAllocator(), node, mode, span);
                 },
                 .question => {
                     try self.advance();
@@ -512,7 +548,7 @@ pub const Parser = struct {
                         try self.advance();
                         break :blk .lazy;
                     } else .greedy;
-                    node = try ast.Node.createOptional(self.allocator, node, mode, span);
+                    node = try ast.Node.createOptional(self.astAllocator(), node, mode, span);
                 },
                 .lbrace => {
                     try self.advance(); // consume {
@@ -590,7 +626,7 @@ pub const Parser = struct {
                         try self.advance();
                         break :blk .lazy;
                     } else .greedy;
-                    node = try ast.Node.createRepeat(self.allocator, node, bounds, mode, span);
+                    node = try ast.Node.createRepeat(self.astAllocator(), node, bounds, mode, span);
                 },
                 else => break,
             }
@@ -632,118 +668,78 @@ pub const Parser = struct {
                     break :blk codepoint;
                 };
 
-                return ast.Node.createLiteral(self.allocator, c, flags.case_insensitive, span);
+                return ast.Node.createLiteral(self.astAllocator(), c, flags.case_insensitive, span);
             },
             .dot => {
                 try self.advance();
                 const flags = self.currentFlags();
-                return ast.Node.createAny(self.allocator, flags.dot_all, span);
+                return ast.Node.createAny(self.astAllocator(), flags.dot_all, span);
             },
             .caret => {
                 try self.advance();
                 const flags = self.currentFlags();
-                return ast.Node.createAnchor(self.allocator, .start_line, flags.multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .start_line, flags.multiline, span);
             },
             .dollar => {
                 try self.advance();
                 const flags = self.currentFlags();
-                return ast.Node.createAnchor(self.allocator, .end_line, flags.multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .end_line, flags.multiline, span);
             },
             .escape_d => {
                 try self.advance();
                 const flags = self.currentFlags();
                 if (flags.unicode) {
-                    return ast.Node.createCharClass(self.allocator, .{
+                    return ast.Node.createCharClass(self.astAllocator(), .{
                         .ranges = &[_]common.CharRange{},
                         .negated = false,
                         .unicode_property = .digit,
                     }, flags.case_insensitive, token.span);
                 }
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.digit.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.digit.negated,
-                }, flags.case_insensitive, token.span);
+                return self.createCharClassFromEscape("digit", token);
             },
             .escape_D => {
                 try self.advance();
                 const flags = self.currentFlags();
                 if (flags.unicode) {
-                    return ast.Node.createCharClass(self.allocator, .{
+                    return ast.Node.createCharClass(self.astAllocator(), .{
                         .ranges = &[_]common.CharRange{},
                         .negated = true,
                         .unicode_property = .digit,
                     }, flags.case_insensitive, token.span);
                 }
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_digit.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.non_digit.negated,
-                }, flags.case_insensitive, token.span);
+                return self.createCharClassFromEscape("non_digit", token);
             },
             .escape_w => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.word.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.word.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("word", token);
             },
             .escape_W => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_word.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.non_word.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("non_word", token);
             },
             .escape_s => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.whitespace.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.whitespace.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("whitespace", token);
             },
             .escape_S => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_whitespace.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.non_whitespace.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("non_whitespace", token);
             },
             .escape_h => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.horizontal_whitespace.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.horizontal_whitespace.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("horizontal_whitespace", token);
             },
             .escape_H => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_horizontal_whitespace.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.non_horizontal_whitespace.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("non_horizontal_whitespace", token);
             },
             .escape_v => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.vertical_whitespace.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.vertical_whitespace.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("vertical_whitespace", token);
             },
             .escape_V => {
                 try self.advance();
-                const ranges = try self.allocator.dupe(common.CharRange, common.CharClasses.non_vertical_whitespace.ranges);
-                return ast.Node.createCharClass(self.allocator, .{
-                    .ranges = ranges,
-                    .negated = common.CharClasses.non_vertical_whitespace.negated,
-                }, self.currentFlags().case_insensitive, token.span);
+                return self.createCharClassFromEscape("non_vertical_whitespace", token);
             },
             .escape_R => {
                 try self.advance();
@@ -753,34 +749,34 @@ pub const Parser = struct {
                 // Per PCRE2 spec: \R = (?>\r\n|\n|\x0b|\f|\r|\x85)
                 // Order matters: CRLF must be tried first!
 
-                const crlf = try ast.Node.createConcat(self.allocator, try ast.Node.createLiteral(self.allocator, '\r', false, r_span), try ast.Node.createLiteral(self.allocator, '\n', false, r_span), r_span);
-                const lf = try ast.Node.createLiteral(self.allocator, '\n', false, r_span);
-                const vt = try ast.Node.createLiteral(self.allocator, 0x0B, false, r_span); // \x0b
-                const ff = try ast.Node.createLiteral(self.allocator, 0x0C, false, r_span); // \f
-                const cr = try ast.Node.createLiteral(self.allocator, '\r', false, r_span);
-                const nel = try ast.Node.createLiteral(self.allocator, 0x0085, false, r_span);
-                const ls = try ast.Node.createLiteral(self.allocator, 0x2028, false, r_span);
-                const ps = try ast.Node.createLiteral(self.allocator, 0x2029, false, r_span);
+                const crlf = try ast.Node.createConcat(self.astAllocator(), try ast.Node.createLiteral(self.astAllocator(), '\r', false, r_span), try ast.Node.createLiteral(self.astAllocator(), '\n', false, r_span), r_span);
+                const lf = try ast.Node.createLiteral(self.astAllocator(), '\n', false, r_span);
+                const vt = try ast.Node.createLiteral(self.astAllocator(), 0x0B, false, r_span); // \x0b
+                const ff = try ast.Node.createLiteral(self.astAllocator(), 0x0C, false, r_span); // \f
+                const cr = try ast.Node.createLiteral(self.astAllocator(), '\r', false, r_span);
+                const nel = try ast.Node.createLiteral(self.astAllocator(), 0x0085, false, r_span);
+                const ls = try ast.Node.createLiteral(self.astAllocator(), 0x2028, false, r_span);
+                const ps = try ast.Node.createLiteral(self.astAllocator(), 0x2029, false, r_span);
 
                 // Build alternation: crlf | lf | vt | ff | cr | nel | ls | ps
-                var alt = try ast.Node.createAlternation(self.allocator, crlf, lf, r_span);
-                alt = try ast.Node.createAlternation(self.allocator, alt, vt, r_span);
-                alt = try ast.Node.createAlternation(self.allocator, alt, ff, r_span);
-                alt = try ast.Node.createAlternation(self.allocator, alt, cr, r_span);
-                alt = try ast.Node.createAlternation(self.allocator, alt, nel, r_span);
-                alt = try ast.Node.createAlternation(self.allocator, alt, ls, r_span);
-                alt = try ast.Node.createAlternation(self.allocator, alt, ps, r_span);
+                var alt = try ast.Node.createAlternation(self.astAllocator(), crlf, lf, r_span);
+                alt = try ast.Node.createAlternation(self.astAllocator(), alt, vt, r_span);
+                alt = try ast.Node.createAlternation(self.astAllocator(), alt, ff, r_span);
+                alt = try ast.Node.createAlternation(self.astAllocator(), alt, cr, r_span);
+                alt = try ast.Node.createAlternation(self.astAllocator(), alt, nel, r_span);
+                alt = try ast.Node.createAlternation(self.astAllocator(), alt, ls, r_span);
+                alt = try ast.Node.createAlternation(self.astAllocator(), alt, ps, r_span);
 
                 // Wrap in atomic group (prevents backtracking)
-                return ast.Node.createAtomicGroup(self.allocator, alt, r_span);
+                return ast.Node.createAtomicGroup(self.astAllocator(), alt, r_span);
             },
             .escape_b => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .word_boundary, self.currentFlags().multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .word_boundary, self.currentFlags().multiline, span);
             },
             .escape_B => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .non_word_boundary, self.currentFlags().multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .non_word_boundary, self.currentFlags().multiline, span);
             },
             .escape_p, .escape_P => {
                 const is_negated = (self.current_token.token_type == .escape_P);
@@ -811,7 +807,7 @@ pub const Parser = struct {
 
                 // Special case for \p{Any}
                 if (std.mem.eql(u8, prop_name, "Any")) {
-                    return ast.Node.createCharClass(self.allocator, .{
+                    return ast.Node.createCharClass(self.astAllocator(), .{
                         .ranges = &[_]common.CharRange{},
                         .negated = is_negated,
                         .unicode_property = .any,
@@ -825,7 +821,7 @@ pub const Parser = struct {
                 };
 
                 // Create CharClass with script property
-                return ast.Node.createCharClass(self.allocator, .{
+                return ast.Node.createCharClass(self.astAllocator(), .{
                     .ranges = &[_]common.CharRange{},
                     .negated = is_negated,
                     .unicode_property = .{ .script = script },
@@ -833,20 +829,20 @@ pub const Parser = struct {
             },
             .escape_A => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .start_text, self.currentFlags().multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .start_text, self.currentFlags().multiline, span);
             },
             .escape_z, .escape_Z => {
                 try self.advance();
-                return ast.Node.createAnchor(self.allocator, .end_text, self.currentFlags().multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .end_text, self.currentFlags().multiline, span);
             },
             .escape_char => {
                 try self.advance();
-                return ast.Node.createLiteral(self.allocator, token.value, self.currentFlags().case_insensitive, token.span);
+                return ast.Node.createLiteral(self.astAllocator(), token.value, self.currentFlags().case_insensitive, token.span);
             },
             .backref => {
                 try self.advance();
                 const index = token.value; // 1-based capture group index
-                return ast.Node.createBackreference(self.allocator, index, null, span);
+                return ast.Node.createBackreference(self.astAllocator(), index, null, span);
             },
             .pcre_ucp, .pcre_utf => {
                 try self.advance();
@@ -854,7 +850,7 @@ pub const Parser = struct {
                 var current_flags = &self.flag_stack.items[self.flag_stack.items.len - 1];
                 current_flags.unicode = true;
                 // Return empty node (these verbs don't produce AST nodes)
-                return ast.Node.createEmpty(self.allocator, span);
+                return ast.Node.createEmpty(self.astAllocator(), span);
             },
             .lparen => {
                 // SECURITY: Check nesting depth to prevent stack overflow
@@ -883,11 +879,10 @@ pub const Parser = struct {
 
                         // Parse alternation with reset behavior
                         const child = try self.parseAlternationWithReset();
-                        errdefer child.destroy(self.allocator);
                         try self.expect(.rparen);
 
                         // Branch reset group is non-capturing
-                        return ast.Node.createGroup(self.allocator, child, null, span);
+                        return ast.Node.createGroup(self.astAllocator(), child, null, span);
                     }
 
                     // Check for conditional pattern (?(...)yes|no)
@@ -909,10 +904,9 @@ pub const Parser = struct {
 
                                 try self.advance(); // consume = or !
                                 const child = try self.parseAlternation();
-                                errdefer child.destroy(self.allocator);
                                 try self.expect(.rparen); // consume ) after assertion
 
-                                const assertion_node = try ast.Node.createLookahead(self.allocator, child, is_positive, span);
+                                const assertion_node = try ast.Node.createLookahead(self.astAllocator(), child, is_positive, span);
                                 break :blk ast.Node.ConditionType{ .assertion = assertion_node };
                             } else if (self.current_token.token_type == .literal and (self.current_token.value == '<' or self.current_token.value == '\'')) {
                                 // Named group condition (?(<name>)yes|no) or (?('name')yes|no)
@@ -939,30 +933,20 @@ pub const Parser = struct {
                             }
                         };
 
-                        errdefer {
-                            switch (condition) {
-                                .assertion => |n| n.destroy(self.allocator),
-                                .group_name => |n| self.allocator.free(n),
-                                .group_number => {},
-                            }
-                        }
-
                         if (!is_assertion) {
                             try self.expect(.rparen); // consume ) after condition (not for assertions)
                         }
 
                         const yes_branch = try self.parseConcat();
-                        errdefer yes_branch.destroy(self.allocator);
 
                         const no_branch = if (self.current_token.token_type == .pipe) blk: {
                             try self.advance(); // consume |
                             const no = try self.parseConcat();
-                            errdefer no.destroy(self.allocator);
                             break :blk no;
                         } else null;
 
                         try self.expect(.rparen);
-                        return ast.Node.createConditional(self.allocator, condition, yes_branch, no_branch, span);
+                        return ast.Node.createConditional(self.astAllocator(), condition, yes_branch, no_branch, span);
                     }
 
                     // Check for inline modifiers: (?i), (?-i), (?i:...), (?im), etc.
@@ -998,9 +982,8 @@ pub const Parser = struct {
                                     defer _ = self.flag_stack.pop();
 
                                     const child = try self.parseAlternation();
-                                    errdefer child.destroy(self.allocator);
                                     try self.expect(.rparen);
-                                    return ast.Node.createGroup(self.allocator, child, null, span);
+                                    return ast.Node.createGroup(self.astAllocator(), child, null, span);
                                 } else {
                                     // Not a flag character, break
                                     break;
@@ -1020,7 +1003,7 @@ pub const Parser = struct {
                                 self.lexer.flags = new_flags;
 
                                 // Return empty node (modifier doesn't consume input)
-                                return ast.Node.createEmpty(self.allocator, span);
+                                return ast.Node.createEmpty(self.astAllocator(), span);
                             }
                         }
                     }
@@ -1035,23 +1018,20 @@ pub const Parser = struct {
                             // Positive lookahead (?=...)
                             try self.advance(); // consume =
                             const child = try self.parseAlternation();
-                            errdefer child.destroy(self.allocator);
                             try self.expect(.rparen);
-                            return ast.Node.createLookahead(self.allocator, child, true, span);
+                            return ast.Node.createLookahead(self.astAllocator(), child, true, span);
                         } else if (self.current_token.value == '!') {
                             // Negative lookahead (?!...)
                             try self.advance(); // consume !
                             const child = try self.parseAlternation();
-                            errdefer child.destroy(self.allocator);
                             try self.expect(.rparen);
-                            return ast.Node.createLookahead(self.allocator, child, false, span);
+                            return ast.Node.createLookahead(self.astAllocator(), child, false, span);
                         } else if (self.current_token.value == '>') {
                             // Atomic group (?>...)
                             try self.advance(); // consume >
                             const child = try self.parseAlternation();
-                            errdefer child.destroy(self.allocator);
                             try self.expect(.rparen);
-                            return ast.Node.createAtomicGroup(self.allocator, child, span);
+                            return ast.Node.createAtomicGroup(self.astAllocator(), child, span);
                         } else if (self.current_token.value == 'P') {
                             // Python-style named group (?P<name>...)
                             try self.advance(); // consume P
@@ -1074,16 +1054,14 @@ pub const Parser = struct {
                                     // Positive lookbehind (?<=...)
                                     try self.advance(); // consume =
                                     const child = try self.parseAlternation();
-                                    errdefer child.destroy(self.allocator);
                                     try self.expect(.rparen);
-                                    return ast.Node.createLookbehind(self.allocator, child, true, span);
+                                    return ast.Node.createLookbehind(self.astAllocator(), child, true, span);
                                 } else if (self.current_token.value == '!') {
                                     // Negative lookbehind (?<!...)
                                     try self.advance(); // consume !
                                     const child = try self.parseAlternation();
-                                    errdefer child.destroy(self.allocator);
                                     try self.expect(.rparen);
-                                    return ast.Node.createLookbehind(self.allocator, child, false, span);
+                                    return ast.Node.createLookbehind(self.astAllocator(), child, false, span);
                                 } else {
                                     // .NET/Perl-style named group (?<name>...)
                                     // Restore position to re-parse the name
@@ -1116,13 +1094,12 @@ pub const Parser = struct {
                 defer _ = self.flag_stack.pop();
 
                 const child = try self.parseAlternation();
-                errdefer child.destroy(self.allocator);
                 try self.expect(.rparen);
 
                 if (group_name) |name| {
-                    return ast.Node.createNamedGroup(self.allocator, child, capture_index, name, span);
+                    return ast.Node.createNamedGroup(self.astAllocator(), child, capture_index, name, span);
                 } else {
-                    return ast.Node.createGroup(self.allocator, child, capture_index, span);
+                    return ast.Node.createGroup(self.astAllocator(), child, capture_index, span);
                 }
             },
             .lbracket => {
@@ -1175,7 +1152,7 @@ pub const Parser = struct {
         }
 
         // Allocate and copy name
-        const name = try self.allocator.alloc(u8, name_len);
+        const name = try self.astAllocator().alloc(u8, name_len);
         @memcpy(name, name_buf[0..name_len]);
         return name;
     }
@@ -1248,8 +1225,8 @@ pub const Parser = struct {
             try self.advance();
         }
 
-        var ranges = try std.ArrayList(common.CharRange).initCapacity(self.allocator, 0);
-        defer ranges.deinit(self.allocator);
+        var ranges = try std.ArrayList(common.CharRange).initCapacity(self.astAllocator(), 0);
+        defer ranges.deinit(self.astAllocator());
 
         var unicode_property: ?common.CharClass.UnicodeProperty = null;
 
@@ -1282,7 +1259,7 @@ pub const Parser = struct {
                             } else {
                                 // Otherwise, add the ranges
                                 for (posix_class.ranges) |range| {
-                                    try ranges.append(self.allocator, range);
+                                    try ranges.append(self.astAllocator(), range);
                                 }
                             }
 
@@ -1311,36 +1288,36 @@ pub const Parser = struct {
 
                 if (self.peek() == .rbracket or self.peek() == .eof) {
                     // '-' at end of class, treat both first_char and '-' as literals
-                    try ranges.append(self.allocator, common.CharRange.init(first_char, first_char));
-                    try ranges.append(self.allocator, common.CharRange.init('-', '-'));
+                    try ranges.append(self.astAllocator(), common.CharRange.init(first_char, first_char));
+                    try ranges.append(self.astAllocator(), common.CharRange.init('-', '-'));
                 } else {
                     // It's a range
                     const second_char = self.getCharClassChar() orelse {
                         // Not a valid char, backtrack and treat '-' as literal
                         self.lexer.pos = saved_pos;
-                        try ranges.append(self.allocator, common.CharRange.init(first_char, first_char));
+                        try ranges.append(self.astAllocator(), common.CharRange.init(first_char, first_char));
                         continue;
                     };
                     try self.advance();
 
-                    try ranges.append(self.allocator, common.CharRange.init(first_char, second_char));
+                    try ranges.append(self.astAllocator(), common.CharRange.init(first_char, second_char));
                 }
             } else {
                 // Single character
-                try ranges.append(self.allocator, common.CharRange.init(first_char, first_char));
+                try ranges.append(self.astAllocator(), common.CharRange.init(first_char, first_char));
             }
         }
 
         try self.expect(.rbracket);
 
         const char_class = common.CharClass{
-            .ranges = try ranges.toOwnedSlice(self.allocator),
+            .ranges = try ranges.toOwnedSlice(self.astAllocator()),
             .negated = negated,
             .unicode_property = unicode_property,
         };
 
         const span = common.Span.init(start, self.current_token.span.end);
-        return ast.Node.createCharClass(self.allocator, char_class, self.currentFlags().case_insensitive, span);
+        return ast.Node.createCharClass(self.astAllocator(), char_class, self.currentFlags().case_insensitive, span);
     }
 
     /// Builds a balanced binary tree from a flat list of nodes to prevent stack overflow
@@ -1355,13 +1332,11 @@ pub const Parser = struct {
 
         const mid = nodes.len / 2;
         const left = try self.buildBalancedTree(nodes[0..mid], createFn);
-        errdefer left.destroy(self.allocator);
 
         const right = try self.buildBalancedTree(nodes[mid..], createFn);
-        errdefer right.destroy(self.allocator);
 
         const span = common.Span.init(left.span.start, right.span.end);
-        return createFn(self.allocator, left, right, span);
+        return createFn(self.astAllocator(), left, right, span);
     }
 };
 

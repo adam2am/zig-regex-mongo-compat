@@ -322,81 +322,24 @@ pub const Node = struct {
         };
         return node;
     }
-
-    /// Recursively free an AST node and all its children
-    pub fn destroy(self: *Node, allocator: std.mem.Allocator) void {
-        switch (self.data) {
-            .concat => |concat| {
-                concat.left.destroy(allocator);
-                concat.right.destroy(allocator);
-            },
-            .alternation => |alt| {
-                alt.left.destroy(allocator);
-                alt.right.destroy(allocator);
-            },
-            .star, .plus, .optional => |quant| {
-                quant.child.destroy(allocator);
-            },
-            .repeat => |repeat| {
-                repeat.child.destroy(allocator);
-            },
-            .group => |group| {
-                group.child.destroy(allocator);
-            },
-            .lookahead, .lookbehind => |assertion| {
-                assertion.child.destroy(allocator);
-            },
-            .atomic_group => |atomic| {
-                atomic.child.destroy(allocator);
-            },
-            .conditional => |cond| {
-                switch (cond.condition) {
-                    .assertion => |assertion_node| assertion_node.destroy(allocator),
-                    .group_name => |name| allocator.free(name),
-                    .group_number => {},
-                }
-                cond.yes_branch.destroy(allocator);
-                if (cond.no_branch) |no| no.destroy(allocator);
-            },
-            .backref => |backref| {
-                if (backref.name) |name| {
-                    allocator.free(name);
-                }
-            },
-            .char_class => |char_class| {
-                // Free the ranges array. This is safe because:
-                // - For custom char classes ([a-z]), parser allocates ranges
-                // - For predefined classes (\d, \w), they use static arrays
-                // - Static arrays can't be freed, but we only reach here for parsed nodes
-                // - NFA already duplicated these ranges, so we own the originals
-
-                // Check if this is a heap-allocated slice (not a static array)
-                // by checking if the pointer is in the heap range
-                // For now, we'll free all of them - predefined classes aren't created via createCharClass from parser
-                allocator.free(char_class.class.ranges);
-            },
-            else => {},
-        }
-        allocator.destroy(self);
-    }
 };
 
 /// AST represents the entire parsed regular expression
 pub const AST = struct {
     root: *Node,
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     capture_count: usize,
 
-    pub fn init(allocator: std.mem.Allocator, root: *Node, capture_count: usize) AST {
+    pub fn init(arena: std.heap.ArenaAllocator, root: *Node, capture_count: usize) AST {
         return .{
             .root = root,
-            .allocator = allocator,
+            .arena = arena,
             .capture_count = capture_count,
         };
     }
 
     pub fn deinit(self: *AST) void {
-        self.root.destroy(self.allocator);
+        self.arena.deinit();
     }
 };
 
@@ -412,24 +355,26 @@ test "create literal node" {
 }
 
 test "create concat node" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const span = common.Span.init(0, 2);
 
     const left = try Node.createLiteral(allocator, 'a', false, common.Span.init(0, 1));
     const right = try Node.createLiteral(allocator, 'b', false, common.Span.init(1, 2));
     const concat = try Node.createConcat(allocator, left, right, span);
-    defer concat.destroy(allocator);
 
     try std.testing.expectEqual(NodeType.concat, concat.node_type);
 }
 
 test "create star node" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const span = common.Span.init(0, 2);
 
     const child = try Node.createLiteral(allocator, 'a', false, common.Span.init(0, 1));
     const star = try Node.createStar(allocator, child, .greedy, span);
-    defer star.destroy(allocator);
 
     try std.testing.expectEqual(NodeType.star, star.node_type);
     try std.testing.expectEqual(true, star.data.star.mode == .greedy);
