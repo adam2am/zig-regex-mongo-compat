@@ -175,6 +175,9 @@ pub const PrettyPrinter = struct {
                     try writer.print("Backref: \\{d}\n", .{backref.index});
                 }
             },
+            .extended_grapheme => {
+                try writer.writeAll("ExtendedGrapheme (\\X)\n");
+            },
         }
     }
 
@@ -189,6 +192,9 @@ pub const PrettyPrinter = struct {
             },
             .empty => {
                 try writer.writeAll("(empty)");
+            },
+            .extended_grapheme => {
+                try writer.writeAll("(ext-grapheme)");
             },
             .anchor => {
                 const anchor_str = anchorToString(node.data.anchor.type);
@@ -330,6 +336,7 @@ pub const PrettyPrinter = struct {
             .literal => try writer.print("Lit: '{u}'", .{node.data.literal.c}),
             .any => try writer.writeAll("Any"),
             .empty => try writer.writeAll("ε"),
+            .extended_grapheme => try writer.writeAll("ExtGrapheme (\\X)"),
             .anchor => try writer.print("Anchor: {s}", .{anchorToString(node.data.anchor.type)}),
             .char_class => try writer.writeAll("CharClass"),
             .concat => try writer.writeAll("Concat"),
@@ -416,6 +423,7 @@ pub const PrettyPrinter = struct {
             },
             .any => try writer.writeAll("."),
             .empty => {},
+            .extended_grapheme => try writer.writeAll("\\X"),
             .anchor => {
                 const anchor_str = anchorToString(node.data.anchor.type);
                 try writer.writeAll(anchor_str);

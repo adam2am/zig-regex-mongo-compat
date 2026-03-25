@@ -34,6 +34,8 @@ pub const NodeType = enum {
     atomic_group,
     conditional,
     backref,
+    /// Extended grapheme cluster (\X)
+    extended_grapheme,
 };
 
 /// Anchor types
@@ -92,6 +94,7 @@ pub const Node = struct {
         atomic_group: struct { child: *Node },
         conditional: Conditional,
         backref: Backreference,
+        extended_grapheme: void,
     };
 
     pub const Concat = struct {
@@ -164,6 +167,17 @@ pub const Node = struct {
         node.* = .{
             .node_type = .any,
             .data = .{ .any = .{ .dot_all = dot_all } },
+            .span = span,
+        };
+        return node;
+    }
+
+    /// Create an extended grapheme cluster node (\X)
+    pub fn createExtendedGrapheme(allocator: std.mem.Allocator, span: common.Span) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{
+            .node_type = .extended_grapheme,
+            .data = .{ .extended_grapheme = {} },
             .span = span,
         };
         return node;

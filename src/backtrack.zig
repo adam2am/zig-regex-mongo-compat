@@ -132,7 +132,7 @@ pub const BacktrackEngine = struct {
     /// Check if a node can match empty string
     pub fn canMatchEmpty(self: *BacktrackEngine, node: *ast.Node) bool {
         return switch (node.node_type) {
-            .literal, .any, .char_class, .backref => false,
+            .literal, .any, .char_class, .backref, .extended_grapheme => false,
             .empty, .anchor, .lookahead, .lookbehind => true,
             .atomic_group => self.canMatchEmpty(node.data.atomic_group.child),
             .conditional => blk: {
@@ -216,6 +216,7 @@ pub const BacktrackEngine = struct {
             .atomic_group => self.matchAtomicGroup(node.data.atomic_group, pos),
             .conditional => self.matchConditional(node.data.conditional, pos),
             .backref => self.matchBackref(node.data.backref, pos),
+            .extended_grapheme => self.matchExtendedGrapheme(pos),
         };
     }
 
@@ -842,6 +843,173 @@ pub const BacktrackEngine = struct {
     fn matchAtomicGroup(self: *BacktrackEngine, atomic: anytype, pos: usize) ?usize {
         // Atomic groups prevent backtracking: match child once, commit or fail
         return self.matchNode(atomic.child, pos);
+    }
+
+    /// Robust helper to resolve Grapheme Break properties.
+    /// Acts as a fast-path interceptor and fallback to guarantee critical properties
+    /// are correct even if the generated UCD tables are outdated or misparsed.
+    fn getGraphemeBreakProperty(cp: u21) unicode_tables.GraphemeBreakProperty {
+        if (cp == '\r') return .gbCR;
+        if (cp == '\n') return .gbLF;
+        if (cp == 0x200D) return .gbZWJ;
+        if (cp >= 0x1F1E6 and cp <= 0x1F1FF) return .gbRegional_Indicator;
+
+        // Hangul Jamo (Essential for Korean text clustering)
+        if (cp >= 0x1100 and cp <= 0x115F) return .gbL;
+        if (cp >= 0x1160 and cp <= 0x11A7) return .gbV;
+        if (cp >= 0x11A8 and cp <= 0x11FF) return .gbT;
+        if (cp >= 0xAC00 and cp <= 0xD7A3) {
+            const t_index = (cp - 0xAC00) % 28;
+            return if (t_index == 0) .gbLV else .gbLVT;
+        }
+
+        // Extended Pictographic (Emoji rules for ZWJ)
+        // Grouped ranges cover: Misc Symbols, Dingbats, Emoticons, Transport, Ext-A, etc.
+        if ((cp >= 0x2600 and cp <= 0x27BF) or
+            (cp >= 0x1F300 and cp <= 0x1F6FF) or
+            (cp >= 0x1F900 and cp <= 0x1FAFF) or
+            (cp >= 0x1F180 and cp <= 0x1F2FF) or
+            (cp >= 0x1F780 and cp <= 0x1F7FF))
+        {
+            // Skin tone modifiers are Extend, not EP
+            if (cp >= 0x1F3FB and cp <= 0x1F3FF) return .gbExtend;
+            return .gbExtended_Pictographic;
+        }
+
+        // Fallback to Category-based rules (avoids corrupted generator tables)
+        // Category parsing was intact, so we derive graphemes directly from it
+        const cat = unicode_tables.getUcdRecord(cp).category;
+
+        // Cc (Control) and Cf (Format)
+        if (cat == @intFromEnum(unicode_tables.GeneralCategory.Cc) or
+            cat == @intFromEnum(unicode_tables.GeneralCategory.Cf)) return .gbControl;
+
+        // Mn (Nonspacing Mark), Me (Enclosing Mark)
+        if (cat == @intFromEnum(unicode_tables.GeneralCategory.Mn) or
+            cat == @intFromEnum(unicode_tables.GeneralCategory.Me)) return .gbExtend;
+
+        // Mc (Spacing Mark)
+        if (cat == @intFromEnum(unicode_tables.GeneralCategory.Mc)) return .gbSpacingMark;
+
+        return .gbOther;
+    }
+
+    /// Match an extended grapheme cluster (\X)
+    /// Implements Unicode UAX#29 + PCRE2 extensions for emoji ZWJ sequences
+    fn matchExtendedGrapheme(self: *BacktrackEngine, pos: usize) ?usize {
+        if (pos >= self.input.len) return null;
+
+        var ptr = pos;
+
+        // Decode first codepoint
+        const first = decodeUtf8ForwardWithLen(self.input, ptr) orelse return null;
+        var lgb = getGraphemeBreakProperty(first.codepoint);
+        ptr += first.len;
+
+        // Track if we are in an Extended_Pictographic sequence
+        var in_ep_sequence = (lgb == .gbExtended_Pictographic);
+
+        while (ptr < self.input.len) {
+            const next = decodeUtf8ForwardWithLen(self.input, ptr) orelse break;
+            const rgb = getGraphemeBreakProperty(next.codepoint);
+
+            var breaks = true;
+
+            // GB3: CR x LF
+            if (lgb == .gbCR and rgb == .gbLF) {
+                breaks = false;
+            }
+            // GB4: (Control | CR | LF) ÷ Any
+            else if (lgb == .gbControl or lgb == .gbCR or lgb == .gbLF) {
+                breaks = true;
+            }
+            // GB5: Any ÷ (Control | CR | LF)
+            else if (rgb == .gbControl or rgb == .gbCR or rgb == .gbLF) {
+                breaks = true;
+            }
+            // GB6: L x (L | V | LV | LVT)
+            else if (lgb == .gbL and (rgb == .gbL or rgb == .gbV or rgb == .gbLV or rgb == .gbLVT)) {
+                breaks = false;
+            }
+            // GB7: (LV | V) x (V | T)
+            else if ((lgb == .gbLV or lgb == .gbV) and (rgb == .gbV or rgb == .gbT)) {
+                breaks = false;
+            }
+            // GB8: (LVT | T) x T
+            else if ((lgb == .gbLVT or lgb == .gbT) and rgb == .gbT) {
+                breaks = false;
+            }
+            // GB9: x (Extend | ZWJ)
+            else if (rgb == .gbExtend or rgb == .gbZWJ) {
+                breaks = false;
+            }
+            // GB9a: x SpacingMark
+            else if (rgb == .gbSpacingMark) {
+                breaks = false;
+            }
+            // GB9b: Prepend x
+            else if (lgb == .gbPrepend) {
+                breaks = false;
+            }
+            // GB11: \p{Extended_Pictographic} Extend* ZWJ x \p{Extended_Pictographic}
+            else if (in_ep_sequence and lgb == .gbZWJ and rgb == .gbExtended_Pictographic) {
+                breaks = false;
+            }
+            // GB12, GB13: Regional_Indicator x Regional_Indicator
+            else if (lgb == .gbRegional_Indicator and rgb == .gbRegional_Indicator) {
+                const ri_count = self.countPrecedingRI(ptr);
+                // If ri_count is odd, it's the second RI of a pair, so do not break.
+                // If ri_count is even, it's the first RI of a new pair, so break.
+                if (ri_count % 2 == 1) {
+                    breaks = false;
+                } else {
+                    breaks = true;
+                }
+            }
+
+            if (breaks) break;
+
+            // State update for GB11
+            if (rgb == .gbExtended_Pictographic) {
+                in_ep_sequence = true;
+            } else if (rgb == .gbExtend) {
+                // Extend doesn't reset the in_ep_sequence state
+            } else if (rgb == .gbZWJ and in_ep_sequence) {
+                // ZWJ maintains state if we were already in it
+            } else {
+                in_ep_sequence = false;
+            }
+
+            lgb = rgb;
+
+            ptr += next.len;
+        }
+
+        return if (ptr > pos) ptr else null;
+    }
+
+    /// Count preceding Regional Indicators for even-count rule
+    fn countPrecedingRI(self: *const BacktrackEngine, pos: usize) u32 {
+        var count: u32 = 0;
+        var p = pos;
+
+        while (p > 0) {
+            // Find start of previous character
+            var char_start = p - 1;
+            while (char_start > 0 and (self.input[char_start] & 0xC0) == 0x80) {
+                char_start -= 1;
+            }
+
+            const cp = decodeUtf8Forward(self.input, char_start) orelse break;
+            if (getGraphemeBreakProperty(cp) != .gbRegional_Indicator) {
+                break;
+            }
+
+            count += 1;
+            p = char_start;
+        }
+
+        return count;
     }
 
     fn matchConditional(self: *BacktrackEngine, cond: ast.Node.Conditional, pos: usize) ?usize {

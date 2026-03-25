@@ -3,6 +3,7 @@ const std = @import("std");
 // Hardcoded URLs for Unicode 15.1.0 (no comptime issues)
 const UNICODE_DATA_URL = "https://www.unicode.org/Public/15.1.0/ucd/UnicodeData.txt";
 const SCRIPTS_URL = "https://www.unicode.org/Public/15.1.0/ucd/Scripts.txt";
+const GRAPHEME_BREAK_URL = "https://www.unicode.org/Public/15.1.0/ucd/auxiliary/GraphemeBreakProperty.txt";
 
 const GeneralCategory = enum(u8) {
     Lu = 0, // Letter, uppercase
@@ -37,10 +38,30 @@ const GeneralCategory = enum(u8) {
     Cn = 29, // Other, not assigned
 };
 
+/// Grapheme Break Property values (matching PCRE2 + Unicode UAX#29)
+const GraphemeBreakProperty = enum(u8) {
+    gbOther = 0,
+    gbCR = 1,
+    gbLF = 2,
+    gbControl = 3,
+    gbExtend = 4,
+    gbZWJ = 5,
+    gbRegional_Indicator = 6,
+    gbPrepend = 7,
+    gbSpacingMark = 8,
+    gbL = 9,
+    gbV = 10,
+    gbT = 11,
+    gbLV = 12,
+    gbLVT = 13,
+    gbExtended_Pictographic = 14, // PCRE2 extension for emoji ZWJ rules
+};
+
 const UcdRecord = struct {
     codepoint: u21,
     category: GeneralCategory,
     script: u8,
+    grapheme: GraphemeBreakProperty,
 };
 
 const LookupTables = struct {
@@ -70,8 +91,12 @@ pub fn main() !void {
     const scripts_data = try downloadOrCache(allocator, "Scripts.txt", SCRIPTS_URL, cache_dir);
     defer allocator.free(scripts_data);
 
+    const grapheme_data = try downloadOrCache(allocator, "GraphemeBreakProperty.txt", GRAPHEME_BREAK_URL, cache_dir);
+    defer allocator.free(grapheme_data);
+
     std.debug.print("Downloaded {d} bytes of UnicodeData.txt\n", .{unicode_data.len});
     std.debug.print("Downloaded {d} bytes of Scripts.txt\n", .{scripts_data.len});
+    std.debug.print("Downloaded {d} bytes of GraphemeBreakProperty.txt\n", .{grapheme_data.len});
 
     // Parse UnicodeData.txt
     var records = try std.ArrayList(UcdRecord).initCapacity(allocator, 0);
@@ -80,8 +105,17 @@ pub fn main() !void {
     try parseUnicodeData(allocator, unicode_data, &records);
     std.debug.print("Parsed {d} Unicode records\n", .{records.items.len});
 
+    // Allocate array for true codepoint -> grapheme property mapping
+    const graphemes = try allocator.alloc(GraphemeBreakProperty, 0x110000);
+    defer allocator.free(graphemes);
+    @memset(graphemes, .gbOther);
+
+    // Parse GraphemeBreakProperty.txt and update records
+    parseGraphemeBreakProperty(grapheme_data, records.items, graphemes);
+    std.debug.print("Applied grapheme break properties\n", .{});
+
     // Build two-stage lookup tables
-    const tables = try buildLookupTables(allocator, records.items);
+    const tables = try buildLookupTables(allocator, records.items, graphemes);
     defer {
         allocator.free(tables.stage1);
         allocator.free(tables.stage2);
@@ -150,6 +184,7 @@ fn parseUnicodeData(allocator: std.mem.Allocator, data: []const u8, records: *st
             .codepoint = codepoint,
             .category = category,
             .script = 0, // Will be filled from Scripts.txt
+            .grapheme = .gbOther, // Will be filled from GraphemeBreakProperty.txt
         });
     }
 }
@@ -164,6 +199,111 @@ fn parseCategoryString(s: []const u8) ?GeneralCategory {
         .{ "Cc", .Cc }, .{ "Cf", .Cf }, .{ "Cs", .Cs }, .{ "Co", .Co }, .{ "Cn", .Cn },
     });
     return map.get(s);
+}
+
+fn parseGraphemePropertyString(s: []const u8) GraphemeBreakProperty {
+    const map = std.StaticStringMap(GraphemeBreakProperty).initComptime(.{
+        .{ "CR", .gbCR },
+        .{ "LF", .gbLF },
+        .{ "Control", .gbControl },
+        .{ "Extend", .gbExtend },
+        .{ "ZWJ", .gbZWJ },
+        .{ "Regional_Indicator", .gbRegional_Indicator },
+        .{ "Prepend", .gbPrepend },
+        .{ "SpacingMark", .gbSpacingMark },
+        .{ "L", .gbL },
+        .{ "V", .gbV },
+        .{ "T", .gbT },
+        .{ "LV", .gbLV },
+        .{ "LVT", .gbLVT },
+        // Extended Pictographic - PCRE2 extension for emoji ZWJ sequences
+        .{ "Extended_Pictographic", .gbExtended_Pictographic },
+    });
+    return map.get(s) orelse .gbOther;
+}
+
+/// Parse GraphemeBreakProperty.txt and update records in-place
+fn parseGraphemeBreakProperty(data: []const u8, records: []const UcdRecord, graphemes: []GraphemeBreakProperty) void {
+    // First, set default grapheme properties based on category
+    for (records) |record| {
+        if (record.codepoint >= graphemes.len) continue;
+        const cat = record.category;
+        graphemes[record.codepoint] = switch (cat) {
+            .Cc, .Cf => .gbControl,
+            .Mn => .gbExtend,
+            .Mc => .gbSpacingMark,
+            else => .gbOther,
+        };
+    }
+
+    // Mark Extended Pictographic (emoji ranges that participate in ZWJ sequences)
+    // These ranges are from Unicode's Extended_Pictographic property
+    const emoji_ranges = [_]struct { start: u21, end: u21 }{
+        .{ .start = 0x2600, .end = 0x26FF }, // Miscellaneous Symbols
+        .{ .start = 0x2700, .end = 0x27BF }, // Dingbats
+        .{ .start = 0x1F300, .end = 0x1F5FF }, // Misc Symbols and Pictographs
+        .{ .start = 0x1F600, .end = 0x1F64F }, // Emoticons
+        .{ .start = 0x1F680, .end = 0x1F6FF }, // Transport and Map
+        .{ .start = 0x1F1E6, .end = 0x1F1FF }, // Regional Indicator (flags)
+        .{ .start = 0x1F900, .end = 0x1F9FF }, // Additional Emoticons
+        .{ .start = 0x1FA00, .end = 0x1FA6F }, // Chess Symbols
+        .{ .start = 0x1FA70, .end = 0x1FAFF }, // Symbols and Pictographs Extended-A
+        .{ .start = 0x1F780, .end = 0x1F7FF }, // Geometric Shapes Extended
+        .{ .start = 0x1F180, .end = 0x1F1FF }, // Arrows Extended-B
+    };
+
+    for (emoji_ranges) |range| {
+        for (range.start..range.end + 1) |cp| {
+            if (cp < graphemes.len) {
+                graphemes[cp] = .gbExtended_Pictographic;
+            }
+        }
+    }
+
+    // Parse the GraphemeBreakProperty.txt
+    // Format: CODEPOINT..CODEPOINT;PROPERTY
+    // or: CODEPOINT;PROPERTY
+    var lines = std.mem.splitScalar(u8, data, '\n');
+
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+
+        // Skip lines without ;
+        if (std.mem.indexOfScalar(u8, line, ';') == null) continue;
+
+        var fields = std.mem.splitScalar(u8, line, ';');
+        const range_str_raw = fields.next() orelse continue;
+        const property_str_raw = fields.next() orelse continue;
+
+        // Strip inline comments and trim whitespace
+        const hash_idx = std.mem.indexOfScalar(u8, property_str_raw, '#') orelse property_str_raw.len;
+        const property_str = std.mem.trim(u8, property_str_raw[0..hash_idx], &std.ascii.whitespace);
+        const range_str = std.mem.trim(u8, range_str_raw, &std.ascii.whitespace);
+
+        const property = parseGraphemePropertyString(property_str);
+
+        // Parse range (could be "0000..001F" or "0000")
+        var range_start: u21 = 0;
+        var range_end: u21 = 0;
+
+        if (std.mem.indexOfScalar(u8, range_str, '.')) |dot_idx| {
+            // Range like "0000..001F"
+            range_start = std.fmt.parseInt(u21, range_str[0..dot_idx], 16) catch 0;
+            range_end = std.fmt.parseInt(u21, range_str[dot_idx + 2 ..], 16) catch 0;
+        } else {
+            // Single codepoint
+            range_start = std.fmt.parseInt(u21, range_str, 16) catch continue;
+            range_end = range_start;
+        }
+
+        // Update records in range (with safety checks)
+        if (range_start <= range_end and range_start < graphemes.len) {
+            const end_idx = @min(range_end + 1, graphemes.len);
+            for (range_start..end_idx) |cp| {
+                graphemes[cp] = property;
+            }
+        }
+    }
 }
 
 // Tests
@@ -191,7 +331,7 @@ test "parseUnicodeData basic" {
     try testing.expectEqual(GeneralCategory.Ll, records.items[1].category);
 }
 
-fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord) !LookupTables {
+fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord, graphemes: []const GraphemeBreakProperty) !LookupTables {
     const BLOCK_SIZE = 128;
     const MAX_CODEPOINT = 0x110000;
     const NUM_BLOCKS = (MAX_CODEPOINT + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -206,14 +346,19 @@ fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord) !
     defer unique_records.deinit(allocator);
 
     // Add default record (Cn)
-    try unique_records.append(allocator, .{ .codepoint = 0, .category = .Cn, .script = 0 });
+    try unique_records.append(allocator, .{ .codepoint = 0, .category = .Cn, .script = 0, .grapheme = .gbOther });
 
     // Map each codepoint to a record index
-    for (records) |record| {
+    for (records) |base_record| {
+        var record = base_record;
+        if (record.codepoint < MAX_CODEPOINT) {
+            record.grapheme = graphemes[record.codepoint];
+        }
+
         // Find or add record
         var record_idx: u16 = 0;
         for (unique_records.items, 0..) |existing, idx| {
-            if (existing.category == record.category and existing.script == record.script) {
+            if (existing.category == record.category and existing.script == record.script and existing.grapheme == record.grapheme) {
                 record_idx = @intCast(idx);
                 break;
             }
@@ -292,10 +437,31 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
     try content.appendSlice(allocator, "    Cc = 25, Cf = 26, Cs = 27, Co = 28, Cn = 29,\n");
     try content.appendSlice(allocator, "};\n\n");
 
-    // Write UcdRecord struct
+    // Write GraphemeBreakProperty enum
+    try content.appendSlice(allocator, "/// Grapheme Break Property for \\X support (Unicode UAX#29 + PCRE2 extension)\n");
+    try content.appendSlice(allocator, "pub const GraphemeBreakProperty = enum(u8) {\n");
+    try content.appendSlice(allocator, "    gbOther = 0,\n");
+    try content.appendSlice(allocator, "    gbCR = 1,\n");
+    try content.appendSlice(allocator, "    gbLF = 2,\n");
+    try content.appendSlice(allocator, "    gbControl = 3,\n");
+    try content.appendSlice(allocator, "    gbExtend = 4,\n");
+    try content.appendSlice(allocator, "    gbZWJ = 5,\n");
+    try content.appendSlice(allocator, "    gbRegional_Indicator = 6,\n");
+    try content.appendSlice(allocator, "    gbPrepend = 7,\n");
+    try content.appendSlice(allocator, "    gbSpacingMark = 8,\n");
+    try content.appendSlice(allocator, "    gbL = 9,\n");
+    try content.appendSlice(allocator, "    gbV = 10,\n");
+    try content.appendSlice(allocator, "    gbT = 11,\n");
+    try content.appendSlice(allocator, "    gbLV = 12,\n");
+    try content.appendSlice(allocator, "    gbLVT = 13,\n");
+    try content.appendSlice(allocator, "    gbExtended_Pictographic = 14,\n");
+    try content.appendSlice(allocator, "};\n\n");
+
+    // Write UcdRecord struct (without codepoint - we use staged tables for lookup)
     try content.appendSlice(allocator, "pub const UcdRecord = packed struct {\n");
     try content.appendSlice(allocator, "    category: u8,\n");
     try content.appendSlice(allocator, "    script: u8,\n");
+    try content.appendSlice(allocator, "    grapheme: u8,\n");
     try content.appendSlice(allocator, "};\n\n");
 
     // Write stage1
@@ -323,9 +489,10 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
     // Write records
     try content.appendSlice(allocator, "pub const UCD_RECORDS = [_]UcdRecord{\n");
     for (tables.records) |record| {
-        const record_str = try std.fmt.allocPrint(allocator, "    .{{ .category = {d}, .script = {d} }},\n", .{
+        const record_str = try std.fmt.allocPrint(allocator, "    .{{ .category = {d}, .script = {d}, .grapheme = {d} }},\n", .{
             @intFromEnum(record.category),
             record.script,
+            @intFromEnum(record.grapheme),
         });
         defer allocator.free(record_str);
         try content.appendSlice(allocator, record_str);
@@ -353,6 +520,35 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
         \\    const rec = getUcdRecord(codepoint);
         \\    const cat = rec.category;
         \\    return (cat >= 0 and cat <= 4) or (cat >= 8 and cat <= 10) or cat == 5 or cat == 11;
+        \\}
+        \\
+        \\pub fn isDigit(codepoint: u21, use_unicode: bool) bool {
+        \\    if (codepoint < 128) {
+        \\        return codepoint >= '0' and codepoint <= '9';
+        \\    }
+        \\    if (!use_unicode) return false;
+        \\    const rec = getUcdRecord(codepoint);
+        \\    return rec.category == 8; // Nd = Decimal Digit
+        \\}
+        \\
+        \\pub fn isWhitespace(codepoint: u21, use_unicode: bool) bool {
+        \\    if (codepoint < 128) {
+        \\        return switch (@as(u8, @intCast(codepoint))) {
+        \\            ' ', 9, 10, 13, 11, 12 => true,
+        \\            else => false,
+        \\        };
+        \\    }
+        \\    if (!use_unicode) return false;
+        \\    const rec = getUcdRecord(codepoint);
+        \\    const cat = rec.category;
+        \\    return cat >= 22 and cat <= 24; // Zs, Zl, Zp = Separator categories
+        \\}
+        \\
+        \\/// Get Grapheme Break Property for \\X support
+        \\pub fn UCD_GRAPHBREAK(codepoint: u21) GraphemeBreakProperty {
+        \\    if (codepoint >= 0x110000) return .gbOther;
+        \\    const rec = getUcdRecord(codepoint);
+        \\    return @as(GraphemeBreakProperty, @enumFromInt(rec.grapheme));
         \\}
         \\
     );

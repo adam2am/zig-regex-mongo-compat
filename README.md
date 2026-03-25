@@ -20,7 +20,7 @@ zig-regex-mongo-compat is a fork of [zig-regex](https://github.com/zig-utils/zig
 
 Features Thompson NFA construction with linear time complexity, backtracking engine for advanced features, and extensive Unicode support. Built with zero external dependencies and full memory control through Zig allocators.
 
-**Current Status:** v0.4.0 - 120/125 tests passing (96%)
+**Current Status:** v0.5.0 - 139/143 tests passing (97%)
 
 ## Features
 
@@ -66,7 +66,7 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 | **\h, \v** | Horizontal/vertical whitespace | ✅ Stable |
 | **\R** | Any newline sequence | ✅ Stable |
 | **\p{Any}** | Match any character | ✅ Stable |
-| **\X** | Extended grapheme cluster | ❌ Not implemented |
+| **\X** | Extended grapheme cluster | ✅ Stable |
 
 ### Advanced PCRE Features
 
@@ -98,7 +98,7 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 - **Zero Dependencies**: Only Zig standard library
 - **Linear Time Matching**: Thompson NFA guarantees O(n*m) worst-case
 - **Memory Safety**: Full control via Zig allocators, no hidden allocations, zero leaks
-- **125 Test Suite**: 120/125 tests passing (96%) - comprehensive MongoDB PCRE2 edge case coverage
+- **143 Test Suite**: 139/143 tests passing (97%) - comprehensive MongoDB PCRE2 edge case coverage
 - **Production Ready**: Core features stable, Unicode support complete, known limitations documented
 
 ## Installation
@@ -214,9 +214,9 @@ bun run build && bun test/ts/test_edge_cases.ts
 
 ## Test Results
 
-**Overall:** 121/126 tests passing (96%)
+**Overall:** 139/143 tests passing (97%)
 
-### ✅ Fully Working (114 tests)
+### ✅ Fully Working (135 tests)
 - Core regex features (anchors, quantifiers, character classes, groups)
 - Unicode support (8 scripts: Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
 - PCRE flags (`(*UTF)`, `(*UCP)`)
@@ -233,18 +233,18 @@ bun run build && bun test/ts/test_edge_cases.ts
 - **NEW: Horizontal/vertical whitespace** `\h`, `\v`
 - **NEW: Any newline** `\R`
 - **NEW: Unicode property** `\p{Any}`
+- **NEW: Extended grapheme clusters** `\X` (UAX#29 compliant)
 
 ### ⚠️ Known Issues (0 tests)
 - None
 
 ### ❌ Not Implemented (4 tests)
-- `\X` (extended grapheme cluster)
 - Recursive patterns `(?R)`
 - Relative backreferences `\g{-1}`
 - Script runs `(*sr:)`
 - `(*BSR_UNICODE)` flag
 
-### 🚫 Intentionally Unsupported (6 tests)
+### 🚫 Intentionally Unsupported (4 tests)
 - PCRE verbs: `(*FAIL)`, `(*ACCEPT)`, `(*COMMIT)` (return errors as expected)
 - Invalid flags like `g` (return errors as expected)
 - Null bytes in patterns (return errors as expected)

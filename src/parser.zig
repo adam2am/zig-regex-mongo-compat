@@ -33,6 +33,7 @@ pub const TokenType = enum {
     escape_v,
     escape_V,
     escape_R,
+    escape_X,
     escape_b,
     escape_B,
     escape_A,
@@ -117,6 +118,7 @@ pub const Lexer = struct {
             'v' => self.makeToken(.escape_v, 0),
             'V' => self.makeToken(.escape_V, 0),
             'R' => self.makeToken(.escape_R, 0),
+            'X' => self.makeToken(.escape_X, 0),
             'b' => self.makeToken(.escape_b, 0),
             'B' => self.makeToken(.escape_B, 0),
             'A' => self.makeToken(.escape_A, 0),
@@ -769,6 +771,12 @@ pub const Parser = struct {
 
                 // Wrap in atomic group (prevents backtracking)
                 return ast.Node.createAtomicGroup(self.astAllocator(), alt, r_span);
+            },
+            .escape_X => {
+                try self.advance();
+                const x_span = token.span;
+                // \X matches an extended grapheme cluster
+                return ast.Node.createExtendedGrapheme(self.astAllocator(), x_span);
             },
             .escape_b => {
                 try self.advance();

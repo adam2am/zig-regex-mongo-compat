@@ -110,7 +110,7 @@ pub const Optimizer = struct {
                 return true;
             },
             // Any of these stop prefix collection
-            .alternation, .star, .plus, .optional, .repeat, .any, .char_class, .backref => false,
+            .alternation, .star, .plus, .optional, .repeat, .any, .char_class, .backref, .extended_grapheme => false,
             // Lookahead/lookbehind don't consume input, atomic groups do
             .lookahead, .lookbehind => true,
             .atomic_group => try self.collectLiteralPrefix(node.data.atomic_group.child, prefix),
@@ -125,6 +125,7 @@ pub const Optimizer = struct {
             .literal => 1,
             .any => 1,
             .char_class => 1,
+            .extended_grapheme => 1,
             .anchor => 0,
             .empty => 0,
             .concat => self.calculateMinLength(node.data.concat.left) + self.calculateMinLength(node.data.concat.right),
@@ -151,6 +152,7 @@ pub const Optimizer = struct {
             .literal => 1,
             .any => 1,
             .char_class => 1,
+            .extended_grapheme => null, // Grapheme clusters can be infinitely long (combining marks)
             .concat => {
                 const left_max = self.calculateMaxLength(node.data.concat.left) orelse return null;
                 const right_max = self.calculateMaxLength(node.data.concat.right) orelse return null;
