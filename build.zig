@@ -493,6 +493,19 @@ pub fn build(b: *std.Build) void {
     const run_parser_compiler_edge_cases_tests = b.addRunArtifact(parser_compiler_edge_cases_tests);
     test_step.dependOn(&run_parser_compiler_edge_cases_tests.step);
 
+    const branch_reset_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/branch_reset.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_branch_reset_tests = b.addRunArtifact(branch_reset_tests);
+    test_step.dependOn(&run_branch_reset_tests.step);
+
     const unicode_generator_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/generate_unicode_tables.zig"),

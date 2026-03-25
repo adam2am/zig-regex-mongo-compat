@@ -279,6 +279,7 @@ pub const Parser = struct {
     nesting_depth: usize,
     recursion_depth: usize,
     flag_stack: std.ArrayList(common.CompileFlags),
+    reset_stack: std.ArrayList(usize), // Track capture_count at (?| entry for branch reset groups
 
     /// Maximum nesting depth to prevent stack overflow from patterns like (((((...
     pub const MAX_NESTING_DEPTH: usize = 100;
@@ -294,6 +295,8 @@ pub const Parser = struct {
         var flag_stack = try std.ArrayList(common.CompileFlags).initCapacity(allocator, 1);
         try flag_stack.append(allocator, flags); // Push base flags
 
+        const reset_stack = try std.ArrayList(usize).initCapacity(allocator, 1);
+
         return .{
             .lexer = lexer,
             .allocator = allocator,
@@ -302,11 +305,13 @@ pub const Parser = struct {
             .nesting_depth = 0,
             .recursion_depth = 0,
             .flag_stack = flag_stack,
+            .reset_stack = reset_stack,
         };
     }
 
     pub fn deinit(self: *Parser) void {
         self.flag_stack.deinit(self.allocator);
+        self.reset_stack.deinit(self.allocator);
     }
 
     pub fn currentFlags(self: *Parser) common.CompileFlags {
@@ -374,6 +379,45 @@ pub const Parser = struct {
         }
 
         // Build balanced binary tree to prevent stack overflow
+        return self.buildBalancedTree(nodes.items, ast.Node.createAlternation);
+    }
+
+    /// Parse alternation with branch reset behavior for (?|...) groups
+    /// Each branch resets capture_count to the value at (?| entry
+    fn parseAlternationWithReset(self: *Parser) !*ast.Node {
+        self.recursion_depth += 1;
+        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
+            return RegexError.RecursionLimitExceeded;
+        }
+        defer self.recursion_depth -= 1;
+
+        var nodes: std.ArrayList(*ast.Node) = .empty;
+        defer nodes.deinit(self.allocator);
+        errdefer {
+            for (nodes.items) |n| n.destroy(self.allocator);
+        }
+
+        const reset_point = self.reset_stack.items[self.reset_stack.items.len - 1];
+
+        // Parse first branch
+        const first = try self.parseConcat();
+        try nodes.append(self.allocator, first);
+
+        // Parse remaining branches, resetting capture_count at each |
+        while (self.peek() == .pipe) {
+            try self.advance(); // consume |
+
+            // Reset capture_count to saved value
+            self.capture_count = reset_point;
+
+            const right = try self.parseConcat();
+            try nodes.append(self.allocator, right);
+        }
+
+        if (nodes.items.len == 1) {
+            return nodes.items[0];
+        }
+
         return self.buildBalancedTree(nodes.items, ast.Node.createAlternation);
     }
 
@@ -828,6 +872,23 @@ pub const Parser = struct {
 
                 if (self.current_token.token_type == .question) {
                     try self.advance(); // consume ?
+
+                    // Check for branch reset group (?|...)
+                    if (self.current_token.token_type == .pipe) {
+                        try self.advance(); // consume |
+
+                        // Save current capture_count for reset
+                        try self.reset_stack.append(self.allocator, self.capture_count);
+                        defer _ = self.reset_stack.pop();
+
+                        // Parse alternation with reset behavior
+                        const child = try self.parseAlternationWithReset();
+                        errdefer child.destroy(self.allocator);
+                        try self.expect(.rparen);
+
+                        // Branch reset group is non-capturing
+                        return ast.Node.createGroup(self.allocator, child, null, span);
+                    }
 
                     // Check for inline modifiers: (?i), (?-i), (?i:...), (?im), etc.
                     if (self.current_token.token_type == .literal) {
