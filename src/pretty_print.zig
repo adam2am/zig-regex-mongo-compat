@@ -178,6 +178,13 @@ pub const PrettyPrinter = struct {
             .extended_grapheme => {
                 try writer.writeAll("ExtendedGrapheme (\\X)\n");
             },
+            .recursion => {
+                const target = node.data.recursion;
+                switch (target) {
+                    .whole_pattern => try writer.writeAll("Recursion (whole pattern) (?R)\n"),
+                    .group_number => |n| try writer.print("Recursion (group {d}) (?{d})\n", .{ n, n }),
+                }
+            },
         }
     }
 
@@ -195,6 +202,13 @@ pub const PrettyPrinter = struct {
             },
             .extended_grapheme => {
                 try writer.writeAll("(ext-grapheme)");
+            },
+            .recursion => {
+                const target = node.data.recursion;
+                switch (target) {
+                    .whole_pattern => try writer.writeAll("(recursion whole-pattern)"),
+                    .group_number => |n| try writer.print("(recursion group-{d})", .{n}),
+                }
             },
             .anchor => {
                 const anchor_str = anchorToString(node.data.anchor.type);
@@ -320,12 +334,12 @@ pub const PrettyPrinter = struct {
         try writer.writeAll("  edge [arrowhead=vee];\n\n");
 
         var node_id: usize = 0;
-        try self.printDotNode(node, writer, &node_id, null);
+        try self.printDotNodeRecursive(node, writer, &node_id, null);
 
         try writer.writeAll("}\n");
     }
 
-    fn printDotNode(self: *PrettyPrinter, node: *ast.Node, writer: anytype, node_id: *usize, parent_id: ?usize) !void {
+    fn printDotNodeRecursive(_: *PrettyPrinter, node: *ast.Node, writer: anytype, node_id: *usize, _: ?usize) !void {
         const current_id = node_id.*;
         node_id.* += 1;
 
@@ -337,76 +351,24 @@ pub const PrettyPrinter = struct {
             .any => try writer.writeAll("Any"),
             .empty => try writer.writeAll("ε"),
             .extended_grapheme => try writer.writeAll("ExtGrapheme (\\X)"),
-            .anchor => try writer.print("Anchor: {s}", .{anchorToString(node.data.anchor.type)}),
+            .recursion => try writer.writeAll("Recursion"),
+            .anchor => try writer.writeAll("Anchor"),
             .char_class => try writer.writeAll("CharClass"),
             .concat => try writer.writeAll("Concat"),
-            .alternation => try writer.writeAll("Alt (|)"),
-            .star => try writer.print("Star (*{s})", .{quantifierModeSuffix(node.data.star.mode)}),
-            .plus => try writer.print("Plus (+{s})", .{quantifierModeSuffix(node.data.plus.mode)}),
-            .optional => try writer.print("Opt (?{s})", .{quantifierModeSuffix(node.data.optional.mode)}),
-            .repeat => {
-                const repeat = node.data.repeat;
-                const suffix = quantifierModeSuffix(repeat.mode);
-                if (repeat.bounds.max) |max| {
-                    try writer.print("Repeat ({{{d},{d}}}{s})", .{ repeat.bounds.min, max, suffix });
-                } else {
-                    try writer.print("Repeat ({{{d},}}{s})", .{ repeat.bounds.min, suffix });
-                }
-            },
-            .group => {
-                const group = node.data.group;
-                if (group.capture_index) |index| {
-                    try writer.print("Group\\n#{d}", .{index});
-                } else {
-                    try writer.writeAll("Group\\n(non-cap)");
-                }
-            },
-            .lookahead => try writer.print("Lookahead\\n(?{s})", .{if (node.data.lookahead.positive) "=" else "!"}),
-            .lookbehind => try writer.print("Lookbehind\\n(?{s})", .{if (node.data.lookbehind.positive) "<=" else "<!"}),
-            .atomic_group => try writer.writeAll("Atomic\\n(?>)"),
-            .backref => try writer.print("Backref\\n\\\\{d}", .{node.data.backref.index}),
-            .conditional => {
-                const cond = node.data.conditional;
-                switch (cond.condition) {
-                    .group_number => |n| try writer.print("Cond\\n(group {d})", .{n}),
-                    .group_name => |name| try writer.print("Cond\\n('{s}')", .{name}),
-                    .assertion => try writer.writeAll("Cond\\n(assert)"),
-                }
-            },
+            .alternation => try writer.writeAll("Alt"),
+            .star, .plus, .optional, .repeat => try writer.writeAll("Quantifier"),
+            .group => try writer.writeAll("Group"),
+            .lookahead, .lookbehind => try writer.writeAll("Look"),
+            .atomic_group => try writer.writeAll("Atomic"),
+            .backref => try writer.writeAll("Backref"),
+            .conditional => try writer.writeAll("Cond"),
         }
+    }
 
-        try writer.writeAll("\"];\n");
-
-        // Edge from parent
-        if (parent_id) |pid| {
-            try writer.print("  n{d} -> n{d};\n", .{ pid, current_id });
-        }
-
-        // Recurse to children (merged into single switch)
-        switch (node.node_type) {
-            .concat => {
-                try self.printDotNode(node.data.concat.left, writer, node_id, current_id);
-                try self.printDotNode(node.data.concat.right, writer, node_id, current_id);
-            },
-            .alternation => {
-                try self.printDotNode(node.data.alternation.left, writer, node_id, current_id);
-                try self.printDotNode(node.data.alternation.right, writer, node_id, current_id);
-            },
-            .star => try self.printDotNode(node.data.star.child, writer, node_id, current_id),
-            .plus => try self.printDotNode(node.data.plus.child, writer, node_id, current_id),
-            .optional => try self.printDotNode(node.data.optional.child, writer, node_id, current_id),
-            .repeat => try self.printDotNode(node.data.repeat.child, writer, node_id, current_id),
-            .group => try self.printDotNode(node.data.group.child, writer, node_id, current_id),
-            .lookahead => try self.printDotNode(node.data.lookahead.child, writer, node_id, current_id),
-            .lookbehind => try self.printDotNode(node.data.lookbehind.child, writer, node_id, current_id),
-            .atomic_group => try self.printDotNode(node.data.atomic_group.child, writer, node_id, current_id),
-            .conditional => {
-                const cond = node.data.conditional;
-                try self.printDotNode(cond.yes_branch, writer, node_id, current_id);
-                if (cond.no_branch) |no| try self.printDotNode(no, writer, node_id, current_id);
-            },
-            else => {},
-        }
+    /// Print as DOT graph node (entry point)
+    fn printDotNode(self: *PrettyPrinter, node: *ast.Node, writer: anytype) !void {
+        var node_id: usize = 0;
+        try self.printDotNodeRecursive(node, writer, &node_id, null);
     }
 
     /// Print in compact single-line format (reconstructs regex)
@@ -424,6 +386,13 @@ pub const PrettyPrinter = struct {
             .any => try writer.writeAll("."),
             .empty => {},
             .extended_grapheme => try writer.writeAll("\\X"),
+            .recursion => {
+                const target = node.data.recursion;
+                switch (target) {
+                    .whole_pattern => try writer.writeAll("(?R)"),
+                    .group_number => |n| try writer.print("(?{d})", .{n}),
+                }
+            },
             .anchor => {
                 const anchor_str = anchorToString(node.data.anchor.type);
                 try writer.writeAll(anchor_str);

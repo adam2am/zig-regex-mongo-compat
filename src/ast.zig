@@ -36,6 +36,8 @@ pub const NodeType = enum {
     backref,
     /// Extended grapheme cluster (\X)
     extended_grapheme,
+    /// Recursive pattern (?R), (?0), (?1), etc.
+    recursion,
 };
 
 /// Anchor types
@@ -95,6 +97,7 @@ pub const Node = struct {
         conditional: Conditional,
         backref: Backreference,
         extended_grapheme: void,
+        recursion: RecursionTarget,
     };
 
     pub const Concat = struct {
@@ -152,6 +155,13 @@ pub const Node = struct {
         name: ?[]const u8 = null, // optional name for named backreferences
     };
 
+    /// Recursion target for (?R), (?0), (?1), etc.
+    pub const RecursionTarget = union(enum) {
+        whole_pattern, // (?R) or (?0) - recurse entire pattern
+        group_number: usize, // (?1), (?2), etc. - recurse specific group
+        // Future: group_name: []const u8, // (?&name) - recurse named group
+    };
+
     pub fn createLiteral(allocator: std.mem.Allocator, c: common.Char, ignore_case: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
@@ -178,6 +188,17 @@ pub const Node = struct {
         node.* = .{
             .node_type = .extended_grapheme,
             .data = .{ .extended_grapheme = {} },
+            .span = span,
+        };
+        return node;
+    }
+
+    /// Create a recursion node (?R), (?0), (?1), etc.
+    pub fn createRecursion(allocator: std.mem.Allocator, target: RecursionTarget, span: common.Span) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{
+            .node_type = .recursion,
+            .data = .{ .recursion = target },
             .span = span,
         };
         return node;

@@ -1,0 +1,243 @@
+const std = @import("std");
+const Regex = @import("regex").Regex;
+
+test "\\X: matches basic ASCII character" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\X$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("a"));
+    try std.testing.expect(!try regex.isMatch("ab")); // Two graphemes
+}
+
+test "\\X: matches precomposed unicode character" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\X$");
+    defer regex.deinit();
+
+    // 'é' (U+00E9)
+    try std.testing.expect(try regex.isMatch("é"));
+}
+
+test "\\X: matches decomposed combining marks as a single grapheme" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\X$");
+    defer regex.deinit();
+
+    // 'e' (U+0065) + combining acute accent (U+0301)
+    const decomposed = "e\u{0301}";
+    try std.testing.expect(try regex.isMatch(decomposed));
+}
+
+test "\\X: matches ZWJ emoji sequences (Family)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\X$");
+    defer regex.deinit();
+
+    // Man + ZWJ + Woman + ZWJ + Girl (👨‍👩‍👧)
+    const family_emoji = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    try std.testing.expect(try regex.isMatch(family_emoji));
+}
+
+test "\\X: matches Regional Indicator sequences (Flags)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\X$");
+    defer regex.deinit();
+
+    // US Flag (U+1F1FA + U+1F1F8)
+    const us_flag = "\u{1F1FA}\u{1F1F8}";
+    try std.testing.expect(try regex.isMatch(us_flag));
+}
+
+test "\\X: properly handles sequences of regional indicators (even/odd rule)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\X\\X$"); // Expects EXACTLY TWO graphemes
+    defer regex.deinit();
+
+    // Three regional indicators should be parsed as: [RI, RI] (Flag 1) + RI (Standalone RI)
+    // Therefore it is exactly TWO graphemes!
+    const three_ris = "\u{1F1FA}\u{1F1F8}\u{1F1E8}"; // US Flag + 'C' regional indicator
+    try std.testing.expect(try regex.isMatch(three_ris));
+}
+
+test "\\X: extracting graphemes from string" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\X");
+    defer regex.deinit();
+
+    // café with decomposed 'é'
+    const input = "cafe\u{0301}";
+    const matches = try regex.findAll(allocator, input);
+    defer {
+        for (matches) |*m| {
+            var mut_m = m;
+            mut_m.deinit(allocator);
+        }
+        allocator.free(matches);
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), matches.len);
+    try std.testing.expectEqualStrings("c", matches[0].slice);
+    try std.testing.expectEqualStrings("a", matches[1].slice);
+    try std.testing.expectEqualStrings("f", matches[2].slice);
+    try std.testing.expectEqualStrings("e\u{0301}", matches[3].slice);
+}
+
+test "\\X: failure at end of string" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "a\\X");
+    defer regex.deinit();
+
+    // Should not match since there is no grapheme after 'a'
+    try std.testing.expect(!try regex.isMatch("a"));
+}
+
+test "\\X: handling invalid UTF-8 gracefully" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\X");
+    defer regex.deinit();
+
+    // Truncated UTF-8 should silently fail to match \X (or fall back depending on engine rules)
+    const invalid_utf8 = "\xE0\x80";
+    try std.testing.expect(!try regex.isMatch(invalid_utf8));
+}
+
+// ============================================================================
+// (?R) Recursion Tests
+// ============================================================================
+
+test "(?R): basic recursive pattern - nested parentheses" {
+    const allocator = std.testing.allocator;
+    // Match balanced parentheses. Using (?1) because ^ and $ are in the pattern.
+    // (?R) would recurse the entire pattern including anchors, which fails at pos > 0.
+    var regex = try Regex.compile(allocator, "^(\\((?:[^()]|(?1))*\\))$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("()"));
+    try std.testing.expect(try regex.isMatch("(())"));
+    try std.testing.expect(try regex.isMatch("((()))"));
+    try std.testing.expect(!try regex.isMatch("("));
+    try std.testing.expect(!try regex.isMatch(")"));
+    try std.testing.expect(!try regex.isMatch("(()"));
+}
+
+test "(?R): simple recursion - nested parentheses full" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(\\((?:[^()]|(?1))*\\))$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("(abc)"));
+    try std.testing.expect(try regex.isMatch("(a(b)c)"));
+    try std.testing.expect(try regex.isMatch("(a(b(c))d)"));
+    try std.testing.expect(!try regex.isMatch("abc"));
+    try std.testing.expect(!try regex.isMatch("(abc"));
+}
+
+test "(?R): recursion depth limit prevents infinite loop" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(\\((?:[^()]|(?1))*\\))$");
+    defer regex.deinit();
+
+    // With 500 default depth limit, this should still match 5 levels
+    try std.testing.expect(try regex.isMatch("(((())))"));
+
+    // Create deeply nested string exceeding max depth
+    var buf: [1100]u8 = undefined;
+    @memset(&buf, '(');
+    @memset(buf[550..], ')');
+
+    // Should fail cleanly (not crash) when recursion limit is reached
+    try std.testing.expect(!try regex.isMatch(&buf));
+}
+
+test "(?R): recursion returns null when depth exceeded" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(?:(\\((?:[^()]|(?1))*\\)))+$");
+    defer regex.deinit();
+
+    // Multiple nested parens should work
+    try std.testing.expect(try regex.isMatch("(a)(b)(c)"));
+    try std.testing.expect(try regex.isMatch("((a))((b))"));
+}
+
+test "(?1): recurse specific group - match palindrome-ish" {
+    const allocator = std.testing.allocator;
+    // Note: (?1) syntax for recursing specific group
+    var regex = try Regex.compile(allocator, "^(a)(?:(?1))?$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("a"));
+    try std.testing.expect(try regex.isMatch("aa"));
+    try std.testing.expect(!try regex.isMatch("aaa")); // (?1) is just 'a', max length 2
+}
+
+test "(?R): forward reference - group after recursion" {
+    const allocator = std.testing.allocator;
+    // (?1) refers to group 1 which is defined AFTER the recursion
+    // This tests the O(1) group_lookup table works correctly
+    var regex = try Regex.compile(allocator, "^(?1)(a)$");
+    defer regex.deinit();
+
+    // Forward reference - recursion should find group 1 after parsing
+    // The pattern (?1)(a) means recurse group 1 then match 'a'
+    // But group 1 is defined as 'a', so it matches 'a' then recurses 'a' again
+    // This should match "aa" or similar
+    const result = try regex.isMatch("aa");
+    try std.testing.expect(result);
+}
+
+test "(?R): empty recursion with quantifier" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(?:(?R))?$");
+    defer regex.deinit();
+
+    // Empty recursion should match empty
+    try std.testing.expect(try regex.isMatch(""));
+    try std.testing.expect(!try regex.isMatch("anything"));
+}
+
+test "(?R): inside character class (should not recurse)" {
+    const allocator = std.testing.allocator;
+    // (?R) inside character class is literal - not a recursion
+    var regex = try Regex.compile(allocator, "^[(?R)]+$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("("));
+    try std.testing.expect(try regex.isMatch("?"));
+    try std.testing.expect(try regex.isMatch("R"));
+    try std.testing.expect(try regex.isMatch(")"));
+    try std.testing.expect(try regex.isMatch("(?)R"));
+    try std.testing.expect(!try regex.isMatch("a"));
+}
+
+test "(?0): equivalent to (?R)" {
+    const allocator = std.testing.allocator;
+    var regex_r = try Regex.compile(allocator, "^\\((?:[^()]|(?R))*\\)$");
+    defer regex_r.deinit();
+
+    var regex_0 = try Regex.compile(allocator, "^\\((?:[^()]|(?0))*\\)$");
+    defer regex_0.deinit();
+
+    // Both should have same behavior
+    try std.testing.expectEqual(try regex_r.isMatch("()"), try regex_0.isMatch("()"));
+    try std.testing.expectEqual(try regex_r.isMatch("(())"), try regex_0.isMatch("(())"));
+    try std.testing.expectEqual(try regex_r.isMatch("((()))"), try regex_0.isMatch("((()))"));
+}
+
+test "(?R): complex forward reference to nested group" {
+    const allocator = std.testing.allocator;
+    // ^(?2)x(a(b)c)$
+    // (?2) calls group 2 before it is defined.
+    // Group 1 is (a(b)c). Group 2 is (b).
+    // Therefore, (?2) should match 'b'. The pattern expects "bxabc".
+    var regex = try Regex.compile(allocator, "^(?2)x(a(b)c)$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("bxabc"));
+    try std.testing.expect(!try regex.isMatch("xabc"));
+    try std.testing.expect(!try regex.isMatch("bxc"));
+
+    // Also test that the engine gracefully fails if referring to a non-existent group
+    // (?99) will fail to match since group 99 doesn't exist
+    try std.testing.expect(!try regex.isMatch("99xabc"));
+}

@@ -160,13 +160,9 @@ pub const PatternAnalyzer = struct {
             try self.addRecommendation("Example: Replace (a+)+ with a+ (they match the same input)");
         } else if (self.containsQuantifier(child)) {
             // Child contains quantifier: (a+)+, (a*b+)*, etc.
-            // Use lower penalty for simple atomic patterns like (?:\d+)+
-            // These are less dangerous than true nested quantifiers like (a+)+
-            if (self.isAtomicGroup(child)) {
-                // Atomic patterns like character classes are less dangerous
-                self.explosion_factor *= 100.0; // MEDIUM risk instead of CRITICAL
-                try self.addIssue("MEDIUM: Quantifier on atomic group with quantifiers (potential for slow matching)");
-                try self.addRecommendation("Consider simplifying if possible");
+            if (isSafeToQuantify(child)) {
+                // Patterns bounded by literals or safe atomic constructs
+                self.explosion_factor *= 10.0; // LOW risk
             } else {
                 // True nested quantifiers are critical
                 self.explosion_factor *= 1000000.0;
@@ -270,10 +266,21 @@ pub const PatternAnalyzer = struct {
             // 1. Has literal anchor with quantified char class (/\w+)
             // 2. Or all parts are safe to quantify (https?://)
             .concat => {
-                const concat = node.data.concat;
-                const has_anchor = hasLiteralAnchor(concat.left, concat.right);
-                const all_safe = isSafeToQuantify(concat.left) and isSafeToQuantify(concat.right);
-                return has_anchor or all_safe;
+                // If a concat is bounded by a literal or char class at the start or end,
+                // it is anchored to the input, drastically reducing backtracking explosion.
+                var left = node;
+                while (left.node_type == .concat) left = left.data.concat.left;
+                if (left.node_type == .literal or left.node_type == .char_class) return true;
+
+                var right = node;
+                while (right.node_type == .concat) right = right.data.concat.right;
+                if (right.node_type == .literal or right.node_type == .char_class) return true;
+
+                const concat_node = node.data.concat;
+                return isSafeToQuantify(concat_node.left) and isSafeToQuantify(concat_node.right);
+            },
+            .group => {
+                return isSafeToQuantify(node.data.group.child);
             },
             // Groups, alternations, etc. are not safe
             else => false,

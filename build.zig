@@ -391,6 +391,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_extended_grapheme_tests = b.addRunArtifact(extended_grapheme_tests);
 
+    const recursion_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/recursion_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_recursion_tests = b.addRunArtifact(recursion_tests);
+
     const debug_posix_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/debug_posix_test.zig"),
@@ -443,6 +455,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unicode_functions_tests.step);
     test_step.dependOn(&run_debug_unicode_tests.step);
     test_step.dependOn(&run_extended_grapheme_tests.step);
+    test_step.dependOn(&run_recursion_tests.step);
     test_step.dependOn(&run_debug_posix_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
@@ -717,6 +730,9 @@ pub fn build(b: *std.Build) void {
 
     const test_extended_grapheme_step = b.step("test-extended-grapheme", "Run extended_grapheme tests");
     test_extended_grapheme_step.dependOn(&run_extended_grapheme_tests.step);
+
+    const test_recursion_step = b.step("test-recursion", "Run recursion tests");
+    test_recursion_step.dependOn(&run_recursion_tests.step);
 
     const test_backreferences_step = b.step("test-backreferences", "Run backreferences tests");
     test_backreferences_step.dependOn(&run_backreferences_tests.step);

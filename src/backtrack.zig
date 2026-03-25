@@ -34,6 +34,12 @@ pub const BacktrackEngine = struct {
     captures: []CaptureGroup,
     /// Centralized pre-allocated stack for O(1) backtracking state saves (Zero-allocation hot path)
     state_stack: std.ArrayList(CaptureGroup),
+    /// O(1) lookup table for group index -> AST node (for recursion)
+    group_lookup: []?*ast.Node,
+    /// Current recursion depth
+    recursion_depth: usize,
+    /// Maximum recursion depth (prevents stack overflow)
+    max_recursion_depth: usize,
     /// If true, lazy quantifiers will not backtrack (used in find() to prefer different positions over more matches)
     disable_lazy_backtrack: bool,
     /// ReDoS protection: count of matching steps
@@ -50,13 +56,20 @@ pub const BacktrackEngine = struct {
     /// Default maximum steps: 10 million (prevents ReDoS while allowing complex patterns)
     pub const DEFAULT_MAX_STEPS: usize = 10_000_000;
 
+    /// Default maximum recursion depth (prevents stack overflow on deeply recursive patterns)
+    pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 500;
+
     pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags) !BacktrackEngine {
         const captures = try allocator.alloc(CaptureGroup, capture_count);
         for (captures) |*cap| {
             cap.* = .{ .start = 0, .end = 0, .matched = false };
         }
 
-        return BacktrackEngine{
+        // Pre-allocate O(1) group lookup table
+        const lookup = try allocator.alloc(?*ast.Node, capture_count + 1);
+        @memset(lookup, null);
+
+        var engine = BacktrackEngine{
             .allocator = allocator,
             .ast_root = root,
             .capture_count = capture_count,
@@ -64,15 +77,92 @@ pub const BacktrackEngine = struct {
             .input = &[_]u8{},
             .captures = captures,
             .state_stack = std.ArrayList(CaptureGroup).initCapacity(allocator, 0) catch unreachable,
+            .group_lookup = lookup,
+            .recursion_depth = 0,
+            .max_recursion_depth = DEFAULT_MAX_RECURSION_DEPTH,
             .disable_lazy_backtrack = false,
             .step_count = 0,
             .max_steps = DEFAULT_MAX_STEPS,
         };
+
+        // Build O(1) lookup table
+        engine.indexGroups(root);
+
+        return engine;
     }
 
     pub fn deinit(self: *BacktrackEngine) void {
         self.allocator.free(self.captures);
+        self.allocator.free(self.group_lookup);
         self.state_stack.deinit(self.allocator);
+    }
+
+    /// Build O(1) lookup table for group index -> AST node
+    fn indexGroups(self: *BacktrackEngine, node: *ast.Node) void {
+        switch (node.node_type) {
+            .group => {
+                if (node.data.group.capture_index) |idx| {
+                    if (idx > 0 and idx < self.group_lookup.len) {
+                        self.group_lookup[idx] = node;
+                    }
+                }
+                self.indexGroups(node.data.group.child);
+            },
+            .concat => {
+                self.indexGroups(node.data.concat.left);
+                self.indexGroups(node.data.concat.right);
+            },
+            .alternation => {
+                self.indexGroups(node.data.alternation.left);
+                self.indexGroups(node.data.alternation.right);
+            },
+            .star => self.indexGroups(node.data.star.child),
+            .plus => self.indexGroups(node.data.plus.child),
+            .optional => self.indexGroups(node.data.optional.child),
+            .repeat => self.indexGroups(node.data.repeat.child),
+            .lookahead => self.indexGroups(node.data.lookahead.child),
+            .lookbehind => self.indexGroups(node.data.lookbehind.child),
+            .atomic_group => self.indexGroups(node.data.atomic_group.child),
+            .conditional => {
+                const cond = node.data.conditional;
+                self.indexGroups(cond.yes_branch);
+                if (cond.no_branch) |no| self.indexGroups(no);
+            },
+            else => {},
+        }
+    }
+
+    /// Match a recursive pattern (?R), (?0), (?1), etc.
+    fn matchRecursion(self: *BacktrackEngine, target: ast.Node.RecursionTarget, pos: usize) ?usize {
+        // Depth limit check
+        if (self.recursion_depth >= self.max_recursion_depth) {
+            return null;
+        }
+
+        // Resolve target node
+        const target_node = switch (target) {
+            .whole_pattern => self.ast_root,
+            .group_number => |num| blk: {
+                if (num == 0 or num >= self.group_lookup.len) break :blk null;
+                break :blk self.group_lookup[num];
+            },
+        };
+
+        if (target_node == null) return null;
+
+        // Save state for PCRE2 "outer wins" semantics
+        const stack_base = self.pushState() catch return null;
+
+        self.recursion_depth += 1;
+        defer self.recursion_depth -= 1;
+
+        // Recurse into target
+        const result_pos = self.matchNode(target_node.?, pos);
+
+        // Restore captures (outer wins)
+        self.popState(stack_base);
+
+        return result_pos;
     }
 
     /// Test if pattern matches entire input
@@ -134,6 +224,7 @@ pub const BacktrackEngine = struct {
         return switch (node.node_type) {
             .literal, .any, .char_class, .backref, .extended_grapheme => false,
             .empty, .anchor, .lookahead, .lookbehind => true,
+            .recursion => true, // Recursion can be nested with quantifiers that match empty
             .atomic_group => self.canMatchEmpty(node.data.atomic_group.child),
             .conditional => blk: {
                 const cond = node.data.conditional;
@@ -217,6 +308,7 @@ pub const BacktrackEngine = struct {
             .conditional => self.matchConditional(node.data.conditional, pos),
             .backref => self.matchBackref(node.data.backref, pos),
             .extended_grapheme => self.matchExtendedGrapheme(pos),
+            .recursion => self.matchRecursion(node.data.recursion, pos),
         };
     }
 

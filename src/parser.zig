@@ -7,6 +7,7 @@ const ErrorContext = @import("errors.zig").ErrorContext;
 /// Token types for lexical analysis
 pub const TokenType = enum {
     literal,
+    escaped_literal,
     dot,
     star,
     plus,
@@ -144,7 +145,7 @@ pub const Lexer = struct {
                     return RegexError.InvalidPattern;
                 }
 
-                return self.makeToken(.literal, value);
+                return self.makeToken(.escape_char, value);
             },
             'p', 'P' => {
                 // Unicode properties: \p{Latin}, \p{Greek}, etc.
@@ -180,11 +181,11 @@ pub const Lexer = struct {
             },
             '\\', '.', '*', '+', '?', '|', '(', ')', '[', ']', '{', '}', '^', '$' => {
                 // Literal escape of special characters
-                return self.makeToken(.literal, c);
+                return self.makeToken(.escaped_literal, c);
             },
             else => {
                 // PCRE compatibility: unknown escapes treated as literals
-                return self.makeToken(.literal, c);
+                return self.makeToken(.escaped_literal, c);
             },
         };
     }
@@ -650,12 +651,13 @@ pub const Parser = struct {
         const span = token.span;
 
         switch (token.token_type) {
-            .literal => {
+            .literal, .escaped_literal => {
                 try self.advance();
                 const flags = self.currentFlags();
 
                 // Decode UTF-8 from raw input at token position
-                const pos = token.span.start;
+                // For escaped_literal, skip the backslash at span.start
+                const pos = if (token.token_type == .escaped_literal) token.span.start + 1 else token.span.start;
                 const byte_value = token.value;
 
                 // ASCII fast path
@@ -1040,6 +1042,20 @@ pub const Parser = struct {
                             const child = try self.parseAlternation();
                             try self.expect(.rparen);
                             return ast.Node.createAtomicGroup(self.astAllocator(), child, span);
+                        } else if (self.current_token.value == 'R' or self.current_token.value == '0') {
+                            // Recursive pattern: (?R) or (?0) - recurse entire pattern
+                            try self.advance(); // consume R or 0
+                            try self.expect(.rparen);
+                            return ast.Node.createRecursion(self.astAllocator(), .{ .whole_pattern = {} }, span);
+                        } else if (self.current_token.value >= '1' and self.current_token.value <= '9') {
+                            // Recursive pattern: (?1), (?2), etc. - recurse specific group
+                            var num: usize = 0;
+                            while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                                num = num * 10 + (self.current_token.value - '0');
+                                try self.advance();
+                            }
+                            try self.expect(.rparen);
+                            return ast.Node.createRecursion(self.astAllocator(), .{ .group_number = num }, span);
                         } else if (self.current_token.value == 'P') {
                             // Python-style named group (?P<name>...)
                             try self.advance(); // consume P
@@ -1194,32 +1210,33 @@ pub const Parser = struct {
     }
 
     /// Get literal character from token (special chars are literal inside [...])
+    /// Uses "Token Contextual Coercion" - blacklist approach for future-proofing
     fn getCharClassChar(self: *Parser) ?common.Char {
-        // Get the base character value (single byte from token)
-        const byte_value: u8 = switch (self.current_token.token_type) {
-            .literal => self.current_token.value,
-            .escape_char => self.current_token.value,
-            // Inside character classes, special chars like . * + ? are literal
-            .dot, .star, .plus, .question, .pipe, .caret, .dollar => self.current_token.value,
-            else => return null,
-        };
+        const t = self.current_token;
 
-        // For ASCII characters (< 128), return as-is
-        if (byte_value < 128) {
-            return byte_value;
+        // Explicit escapes that represent a single character
+        if (t.token_type == .escape_char) return t.value;
+
+        // Blacklist: Tokens that fundamentally CANNOT be coerced into a single literal character
+        switch (t.token_type) {
+            .eof, .escape_d, .escape_D, .escape_w, .escape_W, .escape_s, .escape_S, .escape_h, .escape_H, .escape_v, .escape_V, .escape_R, .escape_X, .escape_b, .escape_B, .escape_A, .escape_z, .escape_Z, .escape_p, .escape_P, .backref, .pcre_ucp, .pcre_utf => return null,
+            else => {}, // Everything else (structural tokens, literals) can be safely coerced
         }
 
-        // For non-ASCII, decode UTF-8 from the current position in the input
-        // The lexer is positioned at the start of this character
-        const pos = self.current_token.span.start;
-        if (pos >= self.lexer.input.len) return byte_value;
+        // Extract the exact byte(s) the lexer saw from the source string
+        // For escaped_literal tokens (like \]), skip the backslash at span.start
+        const pos = if (t.token_type == .escaped_literal) t.span.start + 1 else t.span.start;
+        if (pos >= self.lexer.input.len) return t.value;
+
+        // Fast path for ASCII
+        if (self.lexer.input[pos] < 128) {
+            return self.lexer.input[pos];
+        }
 
         // Decode UTF-8 sequence
-        const len = std.unicode.utf8ByteSequenceLength(self.lexer.input[pos]) catch return byte_value;
-        if (pos + len > self.lexer.input.len) return byte_value;
-        const codepoint = std.unicode.utf8Decode(self.lexer.input[pos .. pos + len]) catch return byte_value;
-
-        return codepoint;
+        const len = std.unicode.utf8ByteSequenceLength(self.lexer.input[pos]) catch return t.value;
+        if (pos + len > self.lexer.input.len) return t.value;
+        return std.unicode.utf8Decode(self.lexer.input[pos .. pos + len]) catch t.value;
     }
 
     /// Parse character class [...]
