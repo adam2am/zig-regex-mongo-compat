@@ -503,8 +503,23 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    branch_reset_tests.linkLibC();
     const run_branch_reset_tests = b.addRunArtifact(branch_reset_tests);
     test_step.dependOn(&run_branch_reset_tests.step);
+
+    const conditional_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conditional.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    conditional_tests.linkLibC();
+    const run_conditional_tests = b.addRunArtifact(conditional_tests);
+    test_step.dependOn(&run_conditional_tests.step);
 
     const unicode_generator_tests = b.addTest(.{
         .root_module = b.createModule(.{

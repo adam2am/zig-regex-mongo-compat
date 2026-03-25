@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const common = @import("common.zig");
 
 /// DRY helper: Convert anchor type to string representation
 fn anchorToString(anchor_type: ast.AnchorType) []const u8 {
@@ -11,6 +12,26 @@ fn anchorToString(anchor_type: ast.AnchorType) []const u8 {
         .word_boundary => "\\b",
         .non_word_boundary => "\\B",
     };
+}
+
+/// DRY helper: Convert quantifier mode to its suffix character(s)
+fn quantifierModeSuffix(mode: ast.Node.QuantifierMode) []const u8 {
+    return switch (mode) {
+        .greedy => "",
+        .lazy => "?",
+        .possessive => "+",
+    };
+}
+
+/// DRY helper: Print character class ranges to a writer
+fn printCharRanges(ranges: []const common.CharRange, writer: anytype) !void {
+    for (ranges) |range| {
+        if (range.start == range.end) {
+            try writer.print("{u}", .{range.start});
+        } else {
+            try writer.print("{u}-{u}", .{ range.start, range.end });
+        }
+    }
 }
 
 /// AST pretty-printer for debugging and visualization
@@ -62,6 +83,14 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll("AtomicGroup (?>...)\n");
                 try self.printTree(node.data.atomic_group.child, writer, depth + 1);
             },
+            .conditional => {
+                const cond = node.data.conditional;
+                try writer.writeAll("Conditional (?(...)\n");
+                try self.printTree(cond.yes_branch, writer, depth + 1);
+                if (cond.no_branch) |no| {
+                    try self.printTree(no, writer, depth + 1);
+                }
+            },
             .anchor => {
                 const anchor_str = switch (node.data.anchor.type) {
                     .start_line => "^ (start of line)",
@@ -77,15 +106,7 @@ pub const PrettyPrinter = struct {
                 const class_data = node.data.char_class;
                 const negated = if (class_data.class.negated) "^" else "";
                 try writer.print("CharClass: [{s}", .{negated});
-
-                // Show ranges
-                for (class_data.class.ranges) |range| {
-                    if (range.start == range.end) {
-                        try writer.print("{u}", .{range.start});
-                    } else {
-                        try writer.print("{u}-{u}", .{ range.start, range.end });
-                    }
-                }
+                try printCharRanges(class_data.class.ranges, writer);
                 try writer.writeAll("]\n");
             },
             .concat => {
@@ -99,43 +120,27 @@ pub const PrettyPrinter = struct {
                 try self.printTree(node.data.alternation.right, writer, depth + 1);
             },
             .star => {
-                const mode_str = switch (node.data.star.mode) {
-                    .greedy => "",
-                    .lazy => "? (lazy)",
-                    .possessive => "+ (possessive)",
-                };
-                try writer.print("Star (*{s})\n", .{mode_str});
+                const suffix = quantifierModeSuffix(node.data.star.mode);
+                try writer.print("Star (*{s})\n", .{suffix});
                 try self.printTree(node.data.star.child, writer, depth + 1);
             },
             .plus => {
-                const mode_str = switch (node.data.plus.mode) {
-                    .greedy => "",
-                    .lazy => "? (lazy)",
-                    .possessive => "+ (possessive)",
-                };
-                try writer.print("Plus (+{s})\n", .{mode_str});
+                const suffix = quantifierModeSuffix(node.data.plus.mode);
+                try writer.print("Plus (+{s})\n", .{suffix});
                 try self.printTree(node.data.plus.child, writer, depth + 1);
             },
             .optional => {
-                const mode_str = switch (node.data.optional.mode) {
-                    .greedy => "",
-                    .lazy => "? (lazy)",
-                    .possessive => "+ (possessive)",
-                };
-                try writer.print("Optional (?{s})\n", .{mode_str});
+                const suffix = quantifierModeSuffix(node.data.optional.mode);
+                try writer.print("Optional (?{s})\n", .{suffix});
                 try self.printTree(node.data.optional.child, writer, depth + 1);
             },
             .repeat => {
                 const repeat = node.data.repeat;
-                const mode_str = switch (repeat.mode) {
-                    .greedy => "",
-                    .lazy => "? (lazy)",
-                    .possessive => "+ (possessive)",
-                };
+                const suffix = quantifierModeSuffix(repeat.mode);
                 if (repeat.bounds.max) |max| {
-                    try writer.print("Repeat {{{d},{d}}}{s}\n", .{ repeat.bounds.min, max, mode_str });
+                    try writer.print("Repeat {{{d},{d}}}{s}\n", .{ repeat.bounds.min, max, suffix });
                 } else {
-                    try writer.print("Repeat {{{d},}}{s}\n", .{ repeat.bounds.min, mode_str });
+                    try writer.print("Repeat {{{d},}}{s}\n", .{ repeat.bounds.min, suffix });
                 }
                 try self.printTree(repeat.child, writer, depth + 1);
             },
@@ -193,13 +198,7 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll("(class ");
                 const class = node.data.char_class;
                 if (class.class.negated) try writer.writeAll("^ ");
-                for (class.class.ranges) |range| {
-                    if (range.start == range.end) {
-                        try writer.print("{u} ", .{range.start});
-                    } else {
-                        try writer.print("{u}-{u} ", .{ range.start, range.end });
-                    }
-                }
+                try printCharRanges(class.class.ranges, writer);
                 try writer.writeAll(")");
             },
             .concat => {
@@ -291,6 +290,20 @@ pub const PrettyPrinter = struct {
             .backref => {
                 try writer.print("(backref {d})", .{node.data.backref.index});
             },
+            .conditional => {
+                const cond = node.data.conditional;
+                switch (cond.condition) {
+                    .group_number => |n| try writer.print("(cond group-{d} ", .{n}),
+                    .group_name => |name| try writer.print("(cond '{s}' ", .{name}),
+                    .assertion => try writer.writeAll("(cond assert "),
+                }
+                try self.printSExpr(cond.yes_branch, writer);
+                if (cond.no_branch) |no| {
+                    try writer.writeAll(" ");
+                    try self.printSExpr(no, writer);
+                }
+                try writer.writeAll(")");
+            },
         }
     }
 
@@ -317,32 +330,20 @@ pub const PrettyPrinter = struct {
             .literal => try writer.print("Lit: '{u}'", .{node.data.literal.c}),
             .any => try writer.writeAll("Any"),
             .empty => try writer.writeAll("ε"),
-            .anchor => {
-                const anchor_str = anchorToString(node.data.anchor.type);
-                try writer.print("Anchor: {s}", .{anchor_str});
-            },
+            .anchor => try writer.print("Anchor: {s}", .{anchorToString(node.data.anchor.type)}),
             .char_class => try writer.writeAll("CharClass"),
             .concat => try writer.writeAll("Concat"),
             .alternation => try writer.writeAll("Alt (|)"),
-            .star => {
-                const lazy = if (node.data.star.mode == .greedy) "" else "?";
-                try writer.print("Star (*{s})", .{lazy});
-            },
-            .plus => {
-                const lazy = if (node.data.plus.mode == .greedy) "" else "?";
-                try writer.print("Plus (+{s})", .{lazy});
-            },
-            .optional => {
-                const lazy = if (node.data.optional.mode == .greedy) "" else "?";
-                try writer.print("Opt (?{s})", .{lazy});
-            },
+            .star => try writer.print("Star (*{s})", .{quantifierModeSuffix(node.data.star.mode)}),
+            .plus => try writer.print("Plus (+{s})", .{quantifierModeSuffix(node.data.plus.mode)}),
+            .optional => try writer.print("Opt (?{s})", .{quantifierModeSuffix(node.data.optional.mode)}),
             .repeat => {
                 const repeat = node.data.repeat;
-                const lazy = if (repeat.mode == .greedy) "" else "?";
+                const suffix = quantifierModeSuffix(repeat.mode);
                 if (repeat.bounds.max) |max| {
-                    try writer.print("Repeat ({{{d},{d}}}{s})", .{ repeat.bounds.min, max, lazy });
+                    try writer.print("Repeat ({{{d},{d}}}{s})", .{ repeat.bounds.min, max, suffix });
                 } else {
-                    try writer.print("Repeat ({{{d},}}{s})", .{ repeat.bounds.min, lazy });
+                    try writer.print("Repeat ({{{d},}}{s})", .{ repeat.bounds.min, suffix });
                 }
             },
             .group => {
@@ -353,19 +354,17 @@ pub const PrettyPrinter = struct {
                     try writer.writeAll("Group\\n(non-cap)");
                 }
             },
-            .lookahead => {
-                const sign = if (node.data.lookahead.positive) "=" else "!";
-                try writer.print("Lookahead\\n(?{s})", .{sign});
-            },
-            .lookbehind => {
-                const sign = if (node.data.lookbehind.positive) "<=" else "<!";
-                try writer.print("Lookbehind\\n(?{s})", .{sign});
-            },
-            .atomic_group => {
-                try writer.writeAll("Atomic\\n(?>)");
-            },
-            .backref => {
-                try writer.print("Backref\\n\\\\{d}", .{node.data.backref.index});
+            .lookahead => try writer.print("Lookahead\\n(?{s})", .{if (node.data.lookahead.positive) "=" else "!"}),
+            .lookbehind => try writer.print("Lookbehind\\n(?{s})", .{if (node.data.lookbehind.positive) "<=" else "<!"}),
+            .atomic_group => try writer.writeAll("Atomic\\n(?>)"),
+            .backref => try writer.print("Backref\\n\\\\{d}", .{node.data.backref.index}),
+            .conditional => {
+                const cond = node.data.conditional;
+                switch (cond.condition) {
+                    .group_number => |n| try writer.print("Cond\\n(group {d})", .{n}),
+                    .group_name => |name| try writer.print("Cond\\n('{s}')", .{name}),
+                    .assertion => try writer.writeAll("Cond\\n(assert)"),
+                }
             },
         }
 
@@ -376,7 +375,7 @@ pub const PrettyPrinter = struct {
             try writer.print("  n{d} -> n{d};\n", .{ pid, current_id });
         }
 
-        // Recurse to children
+        // Recurse to children (merged into single switch)
         switch (node.node_type) {
             .concat => {
                 try self.printDotNode(node.data.concat.left, writer, node_id, current_id);
@@ -394,6 +393,11 @@ pub const PrettyPrinter = struct {
             .lookahead => try self.printDotNode(node.data.lookahead.child, writer, node_id, current_id),
             .lookbehind => try self.printDotNode(node.data.lookbehind.child, writer, node_id, current_id),
             .atomic_group => try self.printDotNode(node.data.atomic_group.child, writer, node_id, current_id),
+            .conditional => {
+                const cond = node.data.conditional;
+                try self.printDotNode(cond.yes_branch, writer, node_id, current_id);
+                if (cond.no_branch) |no| try self.printDotNode(no, writer, node_id, current_id);
+            },
             else => {},
         }
     }
@@ -420,13 +424,7 @@ pub const PrettyPrinter = struct {
                 const class = node.data.char_class;
                 try writer.writeAll("[");
                 if (class.class.negated) try writer.writeAll("^");
-                for (class.class.ranges) |range| {
-                    if (range.start == range.end) {
-                        try writer.print("{u}", .{range.start});
-                    } else {
-                        try writer.print("{u}-{u}", .{ range.start, range.end });
-                    }
-                }
+                try printCharRanges(class.class.ranges, writer);
                 try writer.writeAll("]");
             },
             .concat => {
@@ -441,29 +439,17 @@ pub const PrettyPrinter = struct {
             .star => {
                 try self.printCompact(node.data.star.child, writer);
                 try writer.writeAll("*");
-                switch (node.data.star.mode) {
-                    .greedy => {},
-                    .lazy => try writer.writeAll("?"),
-                    .possessive => try writer.writeAll("+"),
-                }
+                try writer.writeAll(quantifierModeSuffix(node.data.star.mode));
             },
             .plus => {
                 try self.printCompact(node.data.plus.child, writer);
                 try writer.writeAll("+");
-                switch (node.data.plus.mode) {
-                    .greedy => {},
-                    .lazy => try writer.writeAll("?"),
-                    .possessive => try writer.writeAll("+"),
-                }
+                try writer.writeAll(quantifierModeSuffix(node.data.plus.mode));
             },
             .optional => {
                 try self.printCompact(node.data.optional.child, writer);
                 try writer.writeAll("?");
-                switch (node.data.optional.mode) {
-                    .greedy => {},
-                    .lazy => try writer.writeAll("?"),
-                    .possessive => try writer.writeAll("+"),
-                }
+                try writer.writeAll(quantifierModeSuffix(node.data.optional.mode));
             },
             .repeat => {
                 const repeat = node.data.repeat;
@@ -473,11 +459,7 @@ pub const PrettyPrinter = struct {
                 } else {
                     try writer.print("{{{d},}}", .{repeat.bounds.min});
                 }
-                switch (repeat.mode) {
-                    .greedy => {},
-                    .lazy => try writer.writeAll("?"),
-                    .possessive => try writer.writeAll("+"),
-                }
+                try writer.writeAll(quantifierModeSuffix(repeat.mode));
             },
             .group => {
                 const group = node.data.group;
@@ -514,6 +496,9 @@ pub const PrettyPrinter = struct {
             },
             .backref => {
                 try writer.print("\\{d}", .{node.data.backref.index});
+            },
+            .conditional => {
+                try writer.writeAll("(?(...))");
             },
         }
     }
@@ -574,6 +559,12 @@ pub const ASTStats = struct {
             .group => computeRecursive(node.data.group.child, stats, depth + 1),
             .lookahead => computeRecursive(node.data.lookahead.child, stats, depth + 1),
             .lookbehind => computeRecursive(node.data.lookbehind.child, stats, depth + 1),
+            .atomic_group => computeRecursive(node.data.atomic_group.child, stats, depth + 1),
+            .conditional => {
+                const cond = node.data.conditional;
+                computeRecursive(cond.yes_branch, stats, depth + 1);
+                if (cond.no_branch) |no| computeRecursive(no, stats, depth + 1);
+            },
             else => {},
         }
     }

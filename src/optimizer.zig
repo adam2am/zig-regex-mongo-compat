@@ -114,6 +114,7 @@ pub const Optimizer = struct {
             // Lookahead/lookbehind don't consume input, atomic groups do
             .lookahead, .lookbehind => true,
             .atomic_group => try self.collectLiteralPrefix(node.data.atomic_group.child, prefix),
+            .conditional => false, // Cannot guarantee prefix for conditional nodes
             .empty => true,
         };
     }
@@ -134,6 +135,12 @@ pub const Optimizer = struct {
             .group => self.calculateMinLength(node.data.group.child),
             .lookahead, .lookbehind => 0,
             .atomic_group => self.calculateMinLength(node.data.atomic_group.child),
+            .conditional => blk: {
+                const cond = node.data.conditional;
+                const yes_min = self.calculateMinLength(cond.yes_branch);
+                const no_min = if (cond.no_branch) |no| self.calculateMinLength(no) else 0;
+                break :blk @min(yes_min, no_min);
+            },
             .backref => 0,
         };
     }
@@ -175,6 +182,13 @@ pub const Optimizer = struct {
             },
             .atomic_group => {
                 return self.calculateMaxLength(node.data.atomic_group.child);
+            },
+            .conditional => blk: {
+                const cond = node.data.conditional;
+                const yes_max = self.calculateMaxLength(cond.yes_branch);
+                const no_max = if (cond.no_branch) |no| self.calculateMaxLength(no) else 0;
+                if (yes_max == null or no_max == null) break :blk null;
+                break :blk @max(yes_max.?, no_max.?);
             },
             .backref => {
                 // Backreferences have unbounded max length

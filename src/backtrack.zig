@@ -95,6 +95,7 @@ pub const BacktrackEngine = struct {
         var pos: usize = 0;
         while (pos <= input.len) : (pos += 1) {
             self.resetCaptures();
+            self.state_stack.shrinkRetainingCapacity(0); // Clear state stack to prevent memory leaks
             self.step_count = 0; // Reset step counter per starting position
             if (self.matchNode(self.ast_root, pos)) |end_pos| {
                 if (end_pos > pos or (end_pos == pos and self.canMatchEmpty(self.ast_root))) {
@@ -134,6 +135,13 @@ pub const BacktrackEngine = struct {
             .literal, .any, .char_class, .backref => false,
             .empty, .anchor, .lookahead, .lookbehind => true,
             .atomic_group => self.canMatchEmpty(node.data.atomic_group.child),
+            .conditional => blk: {
+                const cond = node.data.conditional;
+                if (cond.no_branch) |no_branch| {
+                    break :blk self.canMatchEmpty(cond.yes_branch) or self.canMatchEmpty(no_branch);
+                }
+                break :blk true; // No else branch, condition false naturally matches empty
+            },
             .concat => self.canMatchEmpty(node.data.concat.left) and self.canMatchEmpty(node.data.concat.right),
             .alternation => self.canMatchEmpty(node.data.alternation.left) or self.canMatchEmpty(node.data.alternation.right),
             .star, .optional => true,
@@ -206,6 +214,7 @@ pub const BacktrackEngine = struct {
             .lookahead => self.matchLookahead(node.data.lookahead, pos),
             .lookbehind => self.matchLookbehind(node.data.lookbehind, pos),
             .atomic_group => self.matchAtomicGroup(node.data.atomic_group, pos),
+            .conditional => self.matchConditional(node.data.conditional, pos),
             .backref => self.matchBackref(node.data.backref, pos),
         };
     }
@@ -295,6 +304,13 @@ pub const BacktrackEngine = struct {
             .concat => self.hasQuantifiers(node.data.concat.left) or self.hasQuantifiers(node.data.concat.right),
             .alternation => self.hasQuantifiers(node.data.alternation.left) or self.hasQuantifiers(node.data.alternation.right),
             .group => self.hasQuantifiers(node.data.group.child),
+            .atomic_group => self.hasQuantifiers(node.data.atomic_group.child),
+            .lookahead, .lookbehind => blk: {
+                const child = if (node.node_type == .lookahead) node.data.lookahead.child else node.data.lookbehind.child;
+                break :blk self.hasQuantifiers(child);
+            },
+            .conditional => self.hasQuantifiers(node.data.conditional.yes_branch) or
+                (if (node.data.conditional.no_branch) |nb| self.hasQuantifiers(nb) else false),
             else => false,
         };
     }
@@ -775,7 +791,7 @@ pub const BacktrackEngine = struct {
                 self.captures[cap_idx - 1] = .{
                     .start = pos,
                     .end = end_pos,
-                    .matched = true,
+                    .matched = end_pos > pos, // Only matched if consumed something
                 };
             }
         }
@@ -826,6 +842,37 @@ pub const BacktrackEngine = struct {
     fn matchAtomicGroup(self: *BacktrackEngine, atomic: anytype, pos: usize) ?usize {
         // Atomic groups prevent backtracking: match child once, commit or fail
         return self.matchNode(atomic.child, pos);
+    }
+
+    fn matchConditional(self: *BacktrackEngine, cond: ast.Node.Conditional, pos: usize) ?usize {
+        // Evaluate condition
+        const condition_met = switch (cond.condition) {
+            .group_number => |num| blk: {
+                // Check if group was captured (group numbers are 1-indexed)
+                if (num == 0 or num > self.captures.len) break :blk false;
+                const capture = self.captures[num - 1];
+                break :blk capture.matched;
+            },
+            .group_name => blk: {
+                // TODO: Named group support not yet implemented
+                break :blk false;
+            },
+            .assertion => |assertion_node| blk: {
+                // Test if assertion matches at current position
+                const result = self.matchNode(assertion_node, pos);
+                break :blk result != null;
+            },
+        };
+
+        // Match appropriate branch
+        if (condition_met) {
+            return self.matchNode(cond.yes_branch, pos);
+        } else if (cond.no_branch) |no_branch| {
+            return self.matchNode(no_branch, pos);
+        } else {
+            // No else branch, condition not met - match succeeds without consuming
+            return pos;
+        }
     }
 
     fn matchLookbehind(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {

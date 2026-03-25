@@ -31,9 +31,8 @@ pub const NodeType = enum {
     lookahead,
     /// Lookbehind assertion (?<=...) or (?<!...)
     lookbehind,
-    /// Atomic group (?>...)
     atomic_group,
-    /// Backreference \1, \2, etc.
+    conditional,
     backref,
 };
 
@@ -91,6 +90,7 @@ pub const Node = struct {
         lookahead: Assertion,
         lookbehind: Assertion,
         atomic_group: struct { child: *Node },
+        conditional: Conditional,
         backref: Backreference,
     };
 
@@ -130,6 +130,18 @@ pub const Node = struct {
     pub const Assertion = struct {
         child: *Node,
         positive: bool, // true for positive, false for negative
+    };
+
+    pub const Conditional = struct {
+        condition: ConditionType,
+        yes_branch: *Node,
+        no_branch: ?*Node,
+    };
+
+    pub const ConditionType = union(enum) {
+        group_number: usize,
+        group_name: []const u8,
+        assertion: *Node,
     };
 
     pub const Backreference = struct {
@@ -291,6 +303,16 @@ pub const Node = struct {
         return node;
     }
 
+    pub fn createConditional(allocator: std.mem.Allocator, condition: ConditionType, yes_branch: *Node, no_branch: ?*Node, span: common.Span) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{
+            .node_type = .conditional,
+            .data = .{ .conditional = .{ .condition = condition, .yes_branch = yes_branch, .no_branch = no_branch } },
+            .span = span,
+        };
+        return node;
+    }
+
     pub fn createBackreference(allocator: std.mem.Allocator, index: usize, name: ?[]const u8, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
@@ -326,6 +348,15 @@ pub const Node = struct {
             },
             .atomic_group => |atomic| {
                 atomic.child.destroy(allocator);
+            },
+            .conditional => |cond| {
+                switch (cond.condition) {
+                    .assertion => |assertion_node| assertion_node.destroy(allocator),
+                    .group_name => |name| allocator.free(name),
+                    .group_number => {},
+                }
+                cond.yes_branch.destroy(allocator);
+                if (cond.no_branch) |no| no.destroy(allocator);
             },
             .backref => |backref| {
                 if (backref.name) |name| {

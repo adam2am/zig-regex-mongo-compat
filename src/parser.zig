@@ -890,6 +890,81 @@ pub const Parser = struct {
                         return ast.Node.createGroup(self.allocator, child, null, span);
                     }
 
+                    // Check for conditional pattern (?(...)yes|no)
+                    if (self.current_token.token_type == .lparen) {
+                        try self.advance(); // consume (
+
+                        const is_assertion = self.current_token.token_type == .question;
+
+                        const condition = blk: {
+                            if (self.current_token.token_type == .question) {
+                                // Assertion condition (?(?=...)yes|no) or (?(?!...)yes|no)
+                                try self.advance(); // consume ?
+
+                                if (self.current_token.token_type != .literal) {
+                                    return RegexError.UnexpectedCharacter;
+                                }
+
+                                const is_positive = if (self.current_token.value == '=') true else if (self.current_token.value == '!') false else return RegexError.UnexpectedCharacter;
+
+                                try self.advance(); // consume = or !
+                                const child = try self.parseAlternation();
+                                errdefer child.destroy(self.allocator);
+                                try self.expect(.rparen); // consume ) after assertion
+
+                                const assertion_node = try ast.Node.createLookahead(self.allocator, child, is_positive, span);
+                                break :blk ast.Node.ConditionType{ .assertion = assertion_node };
+                            } else if (self.current_token.token_type == .literal and (self.current_token.value == '<' or self.current_token.value == '\'')) {
+                                // Named group condition (?(<name>)yes|no) or (?('name')yes|no)
+                                const quote_char = self.current_token.value;
+                                try self.advance(); // consume < or '
+                                const name = try self.parseGroupName();
+                                if (quote_char == '\'') {
+                                    if (self.current_token.token_type != .literal or self.current_token.value != '\'') {
+                                        return RegexError.UnexpectedCharacter;
+                                    }
+                                    try self.advance(); // consume closing '
+                                }
+                                break :blk ast.Node.ConditionType{ .group_name = name };
+                            } else if (self.current_token.token_type == .literal) {
+                                // Group number condition (?(1)yes|no)
+                                var num: usize = 0;
+                                while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                                    num = num * 10 + (self.current_token.value - '0');
+                                    try self.advance();
+                                }
+                                break :blk ast.Node.ConditionType{ .group_number = num };
+                            } else {
+                                return RegexError.UnexpectedCharacter;
+                            }
+                        };
+
+                        errdefer {
+                            switch (condition) {
+                                .assertion => |n| n.destroy(self.allocator),
+                                .group_name => |n| self.allocator.free(n),
+                                .group_number => {},
+                            }
+                        }
+
+                        if (!is_assertion) {
+                            try self.expect(.rparen); // consume ) after condition (not for assertions)
+                        }
+
+                        const yes_branch = try self.parseConcat();
+                        errdefer yes_branch.destroy(self.allocator);
+
+                        const no_branch = if (self.current_token.token_type == .pipe) blk: {
+                            try self.advance(); // consume |
+                            const no = try self.parseConcat();
+                            errdefer no.destroy(self.allocator);
+                            break :blk no;
+                        } else null;
+
+                        try self.expect(.rparen);
+                        return ast.Node.createConditional(self.allocator, condition, yes_branch, no_branch, span);
+                    }
+
                     // Check for inline modifiers: (?i), (?-i), (?i:...), (?im), etc.
                     if (self.current_token.token_type == .literal) {
                         const c = self.current_token.value;
