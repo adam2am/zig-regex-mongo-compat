@@ -126,6 +126,11 @@ pub const PatternAnalyzer = struct {
                 const lookaround = if (node.node_type == .lookahead) node.data.lookahead else node.data.lookbehind;
                 try self.analyzeNode(lookaround.child, inside_quantifier);
             },
+            .atomic_group => {
+                // Atomic groups require backtracking
+                self.can_use_thompson = false;
+                try self.analyzeNode(node.data.atomic_group.child, inside_quantifier);
+            },
             .backref => {
                 // Backreferences require backtracking
                 self.can_use_thompson = false;

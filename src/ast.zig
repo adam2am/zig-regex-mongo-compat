@@ -31,6 +31,8 @@ pub const NodeType = enum {
     lookahead,
     /// Lookbehind assertion (?<=...) or (?<!...)
     lookbehind,
+    /// Atomic group (?>...)
+    atomic_group,
     /// Backreference \1, \2, etc.
     backref,
 };
@@ -88,6 +90,7 @@ pub const Node = struct {
         empty: void,
         lookahead: Assertion,
         lookbehind: Assertion,
+        atomic_group: struct { child: *Node },
         backref: Backreference,
     };
 
@@ -278,6 +281,16 @@ pub const Node = struct {
         return node;
     }
 
+    pub fn createAtomicGroup(allocator: std.mem.Allocator, child: *Node, span: common.Span) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{
+            .node_type = .atomic_group,
+            .data = .{ .atomic_group = .{ .child = child } },
+            .span = span,
+        };
+        return node;
+    }
+
     pub fn createBackreference(allocator: std.mem.Allocator, index: usize, name: ?[]const u8, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
@@ -310,6 +323,9 @@ pub const Node = struct {
             },
             .lookahead, .lookbehind => |assertion| {
                 assertion.child.destroy(allocator);
+            },
+            .atomic_group => |atomic| {
+                atomic.child.destroy(allocator);
             },
             .backref => |backref| {
                 if (backref.name) |name| {

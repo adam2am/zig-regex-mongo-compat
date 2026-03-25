@@ -133,6 +133,7 @@ pub const BacktrackEngine = struct {
         return switch (node.node_type) {
             .literal, .any, .char_class, .backref => false,
             .empty, .anchor, .lookahead, .lookbehind => true,
+            .atomic_group => self.canMatchEmpty(node.data.atomic_group.child),
             .concat => self.canMatchEmpty(node.data.concat.left) and self.canMatchEmpty(node.data.concat.right),
             .alternation => self.canMatchEmpty(node.data.alternation.left) or self.canMatchEmpty(node.data.alternation.right),
             .star, .optional => true,
@@ -204,6 +205,7 @@ pub const BacktrackEngine = struct {
             .empty => pos,
             .lookahead => self.matchLookahead(node.data.lookahead, pos),
             .lookbehind => self.matchLookbehind(node.data.lookbehind, pos),
+            .atomic_group => self.matchAtomicGroup(node.data.atomic_group, pos),
             .backref => self.matchBackref(node.data.backref, pos),
         };
     }
@@ -803,12 +805,27 @@ pub const BacktrackEngine = struct {
     }
 
     fn matchLookahead(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {
-        const stack_base = self.pushState() catch return null;
-        const matched = self.matchNode(assertion.child, pos) != null;
-        self.popState(stack_base);
+        // Save current captures
+        const saved_captures = self.allocator.dupe(CaptureGroup, self.captures) catch return null;
+        defer self.allocator.free(saved_captures);
 
-        if (matched == assertion.positive) return pos;
-        return null;
+        // Try to match child at current position
+        const child_match = self.matchNode(assertion.child, pos);
+
+        // Restore captures (lookahead doesn't consume)
+        @memcpy(self.captures, saved_captures);
+
+        // Return based on assertion type
+        if (assertion.positive) {
+            return if (child_match != null) pos else null;
+        } else {
+            return if (child_match == null) pos else null;
+        }
+    }
+
+    fn matchAtomicGroup(self: *BacktrackEngine, atomic: anytype, pos: usize) ?usize {
+        // Atomic groups prevent backtracking: match child once, commit or fail
+        return self.matchNode(atomic.child, pos);
     }
 
     fn matchLookbehind(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {

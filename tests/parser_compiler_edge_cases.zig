@@ -101,6 +101,43 @@ test "parser: large but valid quantifier" {
     try std.testing.expect(try regex.isMatch(""));
 }
 
+test "atomic group: basic syntax (?>...)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?>abc)");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("abc"));
+    try std.testing.expect(!try regex.isMatch("ab"));
+}
+
+test "atomic group: prevents backtracking" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?>a+)ab");
+    defer regex.deinit();
+
+    // Atomic group consumes all 'a's, no backtracking to match 'ab'
+    try std.testing.expect(!try regex.isMatch("aaab"));
+}
+
+test "atomic group: nested with alternation" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?>a|ab)c");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("ac"));
+    // 'ab' is consumed atomically, can't backtrack to match 'a' then 'bc'
+    try std.testing.expect(!try regex.isMatch("abc"));
+}
+
+test "atomic group: with quantifiers" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?>\\d+)\\d");
+    defer regex.deinit();
+
+    // Atomic group consumes all digits, no backtracking
+    try std.testing.expect(!try regex.isMatch("123"));
+}
+
 // --- Character class syntax edge cases ---
 
 test "parser: character class with escaped ]" {

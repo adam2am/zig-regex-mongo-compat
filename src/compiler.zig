@@ -206,7 +206,7 @@ pub const Compiler = struct {
             .anchor => try self.compileAnchor(node.data.anchor.type, node.data.anchor.multiline),
             .empty => try self.compileEmpty(),
             // These features require backtracking engine
-            .lookahead, .lookbehind, .backref => @import("errors.zig").RegexError.NotImplemented,
+            .lookahead, .lookbehind, .atomic_group, .backref => @import("errors.zig").RegexError.NotImplemented,
         };
     }
 

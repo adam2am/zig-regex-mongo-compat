@@ -651,7 +651,7 @@ pub const Regex = struct {
 fn requiresBacktracking(node: *ast.Node) bool {
     switch (node.node_type) {
         // These features require backtracking
-        .lookahead, .lookbehind, .backref => return true,
+        .lookahead, .lookbehind, .atomic_group, .backref => return true,
 
         // Check for lazy quantifiers
         .star, .plus, .optional => {
@@ -725,6 +725,7 @@ fn collectNamedCaptures(node: *ast.Node, map: *std.StringHashMap(usize)) !void {
             };
             try collectNamedCaptures(child, map);
         },
+        .atomic_group => try collectNamedCaptures(node.data.atomic_group.child, map),
         else => {}, // Literals, character classes, anchors, backreferences don't contain groups
     }
 }

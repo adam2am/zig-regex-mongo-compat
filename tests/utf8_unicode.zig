@@ -47,6 +47,55 @@ test "UTF-8: dot matches multi-byte character" {
     try std.testing.expect(try regex.isMatch("café"));
 }
 
+test "\\R: matches CR" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "line1\\Rline2");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("line1\rline2"));
+}
+
+test "\\R: matches LF" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "line1\\Rline2");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("line1\nline2"));
+}
+
+test "\\R: matches CRLF" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "line1\\Rline2");
+    defer regex.deinit();
+
+    // Per PCRE2 spec: \R matches CRLF as ONE atomic sequence
+    try std.testing.expect(try regex.isMatch("line1\r\nline2"));
+}
+
+test "\\R: matches Unicode NEL (U+0085)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "line1\\Rline2");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("line1\u{0085}line2"));
+}
+
+test "\\R: matches Unicode Line Separator (U+2028)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "line1\\Rline2");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("line1\u{2028}line2"));
+}
+
+test "\\R: matches Unicode Paragraph Separator (U+2029)" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "line1\\Rline2");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("line1\u{2029}line2"));
+}
+
 test "UTF-8: alternation with Unicode" {
     const allocator = std.testing.allocator;
     var regex = try Regex.compile(allocator, "hello|你好|こんにちは");

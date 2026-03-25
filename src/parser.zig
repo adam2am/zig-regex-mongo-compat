@@ -32,6 +32,7 @@ pub const TokenType = enum {
     escape_H,
     escape_v,
     escape_V,
+    escape_R,
     escape_b,
     escape_B,
     escape_A,
@@ -115,6 +116,7 @@ pub const Lexer = struct {
             'H' => self.makeToken(.escape_H, 0),
             'v' => self.makeToken(.escape_v, 0),
             'V' => self.makeToken(.escape_V, 0),
+            'R' => self.makeToken(.escape_R, 0),
             'b' => self.makeToken(.escape_b, 0),
             'B' => self.makeToken(.escape_B, 0),
             'A' => self.makeToken(.escape_A, 0),
@@ -699,6 +701,35 @@ pub const Parser = struct {
                     .negated = common.CharClasses.non_vertical_whitespace.negated,
                 }, self.currentFlags().case_insensitive, token.span);
             },
+            .escape_R => {
+                try self.advance();
+                const r_span = token.span;
+
+                // Expand \R to atomic alternation: (?>\r\n|\r|\n|\u0085|\u2028|\u2029)
+                // Per PCRE2 spec: \R = (?>\r\n|\n|\x0b|\f|\r|\x85)
+                // Order matters: CRLF must be tried first!
+
+                const crlf = try ast.Node.createConcat(self.allocator, try ast.Node.createLiteral(self.allocator, '\r', false, r_span), try ast.Node.createLiteral(self.allocator, '\n', false, r_span), r_span);
+                const lf = try ast.Node.createLiteral(self.allocator, '\n', false, r_span);
+                const vt = try ast.Node.createLiteral(self.allocator, 0x0B, false, r_span); // \x0b
+                const ff = try ast.Node.createLiteral(self.allocator, 0x0C, false, r_span); // \f
+                const cr = try ast.Node.createLiteral(self.allocator, '\r', false, r_span);
+                const nel = try ast.Node.createLiteral(self.allocator, 0x0085, false, r_span);
+                const ls = try ast.Node.createLiteral(self.allocator, 0x2028, false, r_span);
+                const ps = try ast.Node.createLiteral(self.allocator, 0x2029, false, r_span);
+
+                // Build alternation: crlf | lf | vt | ff | cr | nel | ls | ps
+                var alt = try ast.Node.createAlternation(self.allocator, crlf, lf, r_span);
+                alt = try ast.Node.createAlternation(self.allocator, alt, vt, r_span);
+                alt = try ast.Node.createAlternation(self.allocator, alt, ff, r_span);
+                alt = try ast.Node.createAlternation(self.allocator, alt, cr, r_span);
+                alt = try ast.Node.createAlternation(self.allocator, alt, nel, r_span);
+                alt = try ast.Node.createAlternation(self.allocator, alt, ls, r_span);
+                alt = try ast.Node.createAlternation(self.allocator, alt, ps, r_span);
+
+                // Wrap in atomic group (prevents backtracking)
+                return ast.Node.createAtomicGroup(self.allocator, alt, r_span);
+            },
             .escape_b => {
                 try self.advance();
                 return ast.Node.createAnchor(self.allocator, .word_boundary, self.currentFlags().multiline, span);
@@ -733,6 +764,15 @@ pub const Parser = struct {
 
                 // Now advance to consume the escape_p token
                 try self.advance();
+
+                // Special case for \p{Any}
+                if (std.mem.eql(u8, prop_name, "Any")) {
+                    return ast.Node.createCharClass(self.allocator, .{
+                        .ranges = &[_]common.CharRange{},
+                        .negated = is_negated,
+                        .unicode_property = .any,
+                    }, self.currentFlags().case_insensitive, token_span);
+                }
 
                 // Look up script
                 const unicode_properties = @import("unicode_properties.zig");
@@ -869,6 +909,13 @@ pub const Parser = struct {
                             errdefer child.destroy(self.allocator);
                             try self.expect(.rparen);
                             return ast.Node.createLookahead(self.allocator, child, false, span);
+                        } else if (self.current_token.value == '>') {
+                            // Atomic group (?>...)
+                            try self.advance(); // consume >
+                            const child = try self.parseAlternation();
+                            errdefer child.destroy(self.allocator);
+                            try self.expect(.rparen);
+                            return ast.Node.createAtomicGroup(self.allocator, child, span);
                         } else if (self.current_token.value == 'P') {
                             // Python-style named group (?P<name>...)
                             try self.advance(); // consume P

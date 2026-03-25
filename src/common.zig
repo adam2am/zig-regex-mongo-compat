@@ -31,6 +31,7 @@ pub const CharClass = struct {
         digit,
         letter,
         alnum,
+        any,
         script: Script,
 
         pub const Script = @import("unicode_properties.zig").Script;
@@ -44,6 +45,7 @@ pub const CharClass = struct {
                 .digit => unicode.isDigit(c),
                 .letter => unicode.isLetter(c),
                 .alnum => unicode.isAlphanumeric(c),
+                .any => true,
                 .script => |s| unicode_properties.matchesScript(c, s),
             };
             return if (self.negated) !prop_match else prop_match;

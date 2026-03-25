@@ -111,8 +111,9 @@ pub const Optimizer = struct {
             },
             // Any of these stop prefix collection
             .alternation, .star, .plus, .optional, .repeat, .any, .char_class, .backref => false,
-            // Lookahead/lookbehind don't consume input
+            // Lookahead/lookbehind don't consume input, atomic groups do
             .lookahead, .lookbehind => true,
+            .atomic_group => try self.collectLiteralPrefix(node.data.atomic_group.child, prefix),
             .empty => true,
         };
     }
@@ -123,40 +124,17 @@ pub const Optimizer = struct {
             .literal => 1,
             .any => 1,
             .char_class => 1,
-            .concat => {
-                const concat = node.data.concat;
-                return self.calculateMinLength(concat.left) + self.calculateMinLength(concat.right);
-            },
-            .alternation => {
-                const alt = node.data.alternation;
-                const left_min = self.calculateMinLength(alt.left);
-                const right_min = self.calculateMinLength(alt.right);
-                return @min(left_min, right_min);
-            },
-            .star => 0, // * means 0 or more
-            .optional => 0, // ? means 0 or 1
-            .plus => {
-                // + means 1 or more
-                return self.calculateMinLength(node.data.plus.child);
-            },
-            .repeat => {
-                const repeat = node.data.repeat;
-                const child_min = self.calculateMinLength(repeat.child);
-                return child_min * repeat.bounds.min;
-            },
-            .group => {
-                return self.calculateMinLength(node.data.group.child);
-            },
-            .lookahead, .lookbehind => {
-                // Lookaround assertions don't consume input
-                return 0;
-            },
-            .backref => {
-                // Backreferences have variable length (depends on what was captured)
-                // Conservative estimate: 0 minimum
-                return 0;
-            },
-            .anchor, .empty => 0,
+            .anchor => 0,
+            .empty => 0,
+            .concat => self.calculateMinLength(node.data.concat.left) + self.calculateMinLength(node.data.concat.right),
+            .alternation => @min(self.calculateMinLength(node.data.alternation.left), self.calculateMinLength(node.data.alternation.right)),
+            .star, .optional => 0,
+            .plus => self.calculateMinLength(node.data.plus.child),
+            .repeat => node.data.repeat.bounds.min * self.calculateMinLength(node.data.repeat.child),
+            .group => self.calculateMinLength(node.data.group.child),
+            .lookahead, .lookbehind => 0,
+            .atomic_group => self.calculateMinLength(node.data.atomic_group.child),
+            .backref => 0,
         };
     }
 
@@ -167,22 +145,18 @@ pub const Optimizer = struct {
             .any => 1,
             .char_class => 1,
             .concat => {
-                const concat = node.data.concat;
-                const left_max = self.calculateMaxLength(concat.left) orelse return null;
-                const right_max = self.calculateMaxLength(concat.right) orelse return null;
+                const left_max = self.calculateMaxLength(node.data.concat.left) orelse return null;
+                const right_max = self.calculateMaxLength(node.data.concat.right) orelse return null;
                 return left_max + right_max;
             },
             .alternation => {
-                const alt = node.data.alternation;
-                const left_max = self.calculateMaxLength(alt.left) orelse return null;
-                const right_max = self.calculateMaxLength(alt.right) orelse return null;
-                return @max(left_max, right_max);
+                const left_max = self.calculateMaxLength(node.data.alternation.left);
+                const right_max = self.calculateMaxLength(node.data.alternation.right);
+                if (left_max == null or right_max == null) return null;
+                return @max(left_max.?, right_max.?);
             },
             .star => null, // * means unbounded
-            .optional => {
-                // ? means 0 or 1
-                return self.calculateMaxLength(node.data.optional.child) orelse return null;
-            },
+            .optional => self.calculateMaxLength(node.data.optional.child), // ? matches 0 or 1 times
             .plus => null, // + means unbounded
             .repeat => {
                 const repeat = node.data.repeat;
@@ -198,6 +172,9 @@ pub const Optimizer = struct {
             .lookahead, .lookbehind => {
                 // Lookaround assertions don't consume input
                 return 0;
+            },
+            .atomic_group => {
+                return self.calculateMaxLength(node.data.atomic_group.child);
             },
             .backref => {
                 // Backreferences have unbounded max length
@@ -274,4 +251,148 @@ test "optimizer: min/max length calculation" {
 
     try std.testing.expectEqual(@as(usize, 1), info2.min_length);
     try std.testing.expectEqual(@as(?usize, null), info2.max_length);
+}
+
+test "optimizer: concat min/max length" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "abc", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), info.min_length);
+    try std.testing.expectEqual(@as(?usize, 3), info.max_length);
+}
+
+test "optimizer: alternation min/max length" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "a|bb", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), info.min_length); // min of "a" (1) and "bb" (2)
+    try std.testing.expectEqual(@as(?usize, 2), info.max_length); // max of "a" (1) and "bb" (2)
+}
+
+test "optimizer: star quantifier min/max" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "a*", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), info.min_length); // zero or more
+    try std.testing.expectEqual(@as(?usize, null), info.max_length); // unbounded
+}
+
+test "optimizer: optional quantifier min/max" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "a?", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), info.min_length); // zero or one
+    try std.testing.expectEqual(@as(?usize, 1), info.max_length);
+}
+
+test "optimizer: repeat quantifier min/max" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "a{2,5}", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), info.min_length);
+    try std.testing.expectEqual(@as(?usize, 5), info.max_length);
+}
+
+test "optimizer: nested group with quantifier" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "(ab)+", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), info.min_length); // at least one "ab"
+    try std.testing.expectEqual(@as(?usize, null), info.max_length); // unbounded
+}
+
+test "optimizer: complex pattern" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "a(b|cd)*e", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), info.min_length); // "a" + "e" = 2
+    try std.testing.expectEqual(@as(?usize, null), info.max_length); // unbounded due to *
+}
+
+test "optimizer: empty pattern" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const Parser = @import("parser.zig").Parser;
+
+    var parser = try Parser.init(allocator, "", .{});
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    var optimizer = Optimizer.init(allocator);
+    var info = try optimizer.analyze(tree.root);
+    defer info.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), info.min_length);
+    try std.testing.expectEqual(@as(?usize, 0), info.max_length);
 }

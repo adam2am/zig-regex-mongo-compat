@@ -58,6 +58,10 @@ pub const PrettyPrinter = struct {
             .empty => {
                 try writer.writeAll("Empty (ε)\n");
             },
+            .atomic_group => {
+                try writer.writeAll("AtomicGroup (?>...)\n");
+                try self.printTree(node.data.atomic_group.child, writer, depth + 1);
+            },
             .anchor => {
                 const anchor_str = switch (node.data.anchor.type) {
                     .start_line => "^ (start of line)",
@@ -268,15 +272,20 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll(")");
             },
             .lookahead => {
-                const op = if (node.data.lookahead.positive) "lookahead" else "neg-lookahead";
-                try writer.print("({s} ", .{op});
+                const positive = node.data.lookahead.positive;
+                try writer.writeAll(if (positive) "(lookahead " else "(neg-lookahead ");
                 try self.printSExpr(node.data.lookahead.child, writer);
                 try writer.writeAll(")");
             },
             .lookbehind => {
-                const op = if (node.data.lookbehind.positive) "lookbehind" else "neg-lookbehind";
-                try writer.print("({s} ", .{op});
+                const positive = node.data.lookbehind.positive;
+                try writer.writeAll(if (positive) "(lookbehind " else "(neg-lookbehind ");
                 try self.printSExpr(node.data.lookbehind.child, writer);
+                try writer.writeAll(")");
+            },
+            .atomic_group => {
+                try writer.writeAll("(atomic ");
+                try self.printSExpr(node.data.atomic_group.child, writer);
                 try writer.writeAll(")");
             },
             .backref => {
@@ -349,10 +358,15 @@ pub const PrettyPrinter = struct {
                 try writer.print("Lookahead\\n(?{s})", .{sign});
             },
             .lookbehind => {
-                const sign = if (node.data.lookbehind.positive) "=" else "!";
-                try writer.print("Lookbehind\\n(?<{s})", .{sign});
+                const sign = if (node.data.lookbehind.positive) "<=" else "<!";
+                try writer.print("Lookbehind\\n(?{s})", .{sign});
             },
-            .backref => try writer.print("Backref\\n\\\\{d}", .{node.data.backref.index}),
+            .atomic_group => {
+                try writer.writeAll("Atomic\\n(?>)");
+            },
+            .backref => {
+                try writer.print("Backref\\n\\\\{d}", .{node.data.backref.index});
+            },
         }
 
         try writer.writeAll("\"];\n");
@@ -379,6 +393,7 @@ pub const PrettyPrinter = struct {
             .group => try self.printDotNode(node.data.group.child, writer, node_id, current_id),
             .lookahead => try self.printDotNode(node.data.lookahead.child, writer, node_id, current_id),
             .lookbehind => try self.printDotNode(node.data.lookbehind.child, writer, node_id, current_id),
+            .atomic_group => try self.printDotNode(node.data.atomic_group.child, writer, node_id, current_id),
             else => {},
         }
     }
@@ -490,6 +505,11 @@ pub const PrettyPrinter = struct {
                     try writer.writeAll("(?<!");
                 }
                 try self.printCompact(node.data.lookbehind.child, writer);
+                try writer.writeAll(")");
+            },
+            .atomic_group => {
+                try writer.writeAll("(?>");
+                try self.printCompact(node.data.atomic_group.child, writer);
                 try writer.writeAll(")");
             },
             .backref => {
@@ -643,4 +663,118 @@ test "AST stats" {
     try std.testing.expect(stats.node_count > 0);
     try std.testing.expect(stats.quantifier_count >= 2); // + and *
     try std.testing.expect(stats.alternation_count >= 1); // |
+}
+
+test "printCompact: positive lookahead" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const parser = @import("parser.zig");
+
+    var p = try parser.Parser.init(allocator, "foo(?=bar)", .{});
+    var tree = try p.parse();
+    defer tree.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buf.deinit(allocator);
+
+    var printer = PrettyPrinter.init(allocator);
+    try printer.printCompact(tree.root, buf.writer(allocator));
+
+    try std.testing.expectEqualStrings("foo(?=bar)", buf.items);
+}
+
+test "printCompact: negative lookahead" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const parser = @import("parser.zig");
+
+    var p = try parser.Parser.init(allocator, "foo(?!bar)", .{});
+    var tree = try p.parse();
+    defer tree.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buf.deinit(allocator);
+
+    var printer = PrettyPrinter.init(allocator);
+    try printer.printCompact(tree.root, buf.writer(allocator));
+
+    try std.testing.expectEqualStrings("foo(?!bar)", buf.items);
+}
+
+test "printCompact: positive lookbehind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const parser = @import("parser.zig");
+
+    var p = try parser.Parser.init(allocator, "(?<=foo)bar", .{});
+    var tree = try p.parse();
+    defer tree.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buf.deinit(allocator);
+
+    var printer = PrettyPrinter.init(allocator);
+    try printer.printCompact(tree.root, buf.writer(allocator));
+
+    try std.testing.expectEqualStrings("(?<=foo)bar", buf.items);
+}
+
+test "printCompact: negative lookbehind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const parser = @import("parser.zig");
+
+    var p = try parser.Parser.init(allocator, "(?<!foo)bar", .{});
+    var tree = try p.parse();
+    defer tree.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buf.deinit(allocator);
+
+    var printer = PrettyPrinter.init(allocator);
+    try printer.printCompact(tree.root, buf.writer(allocator));
+
+    try std.testing.expectEqualStrings("(?<!foo)bar", buf.items);
+}
+
+test "printCompact: atomic group" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const parser = @import("parser.zig");
+
+    var p = try parser.Parser.init(allocator, "(?>a+)b", .{});
+    var tree = try p.parse();
+    defer tree.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buf.deinit(allocator);
+
+    var printer = PrettyPrinter.init(allocator);
+    try printer.printCompact(tree.root, buf.writer(allocator));
+
+    try std.testing.expectEqualStrings("(?>a+)b", buf.items);
+}
+
+test "printCompact: nested lookaround" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const parser = @import("parser.zig");
+
+    var p = try parser.Parser.init(allocator, "(?=a(?!b))", .{});
+    var tree = try p.parse();
+    defer tree.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buf.deinit(allocator);
+
+    var printer = PrettyPrinter.init(allocator);
+    try printer.printCompact(tree.root, buf.writer(allocator));
+
+    try std.testing.expectEqualStrings("(?=a(?!b))", buf.items);
 }
