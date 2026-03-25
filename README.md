@@ -20,7 +20,7 @@ zig-regex-mongo-compat is a fork of [zig-regex](https://github.com/zig-utils/zig
 
 Features Thompson NFA construction with linear time complexity, backtracking engine for advanced features, and extensive Unicode support. Built with zero external dependencies and full memory control through Zig allocators.
 
-**Current Status:** v0.5.0 - 139/143 tests passing (97%)
+**Current Status:** v0.6.0 - 519/519 tests passing (100%)
 
 ## Features
 
@@ -75,7 +75,7 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 | **Possessive Quantifiers** | ✅ Stable | `*+`, `++`, `?+`, `{n,m}+` |
 | **Atomic Groups** | ✅ Stable | `(?>...)` |
 | **Conditional Patterns** | ✅ Stable | `(?(1)yes\|no)` |
-| **Recursive Patterns** | ❌ Not implemented | `(?R)` |
+| **Recursive Patterns** | ✅ Stable | `(?R)`, `(?0)`, `(?1)`-`(?9)`, forward refs, depth limit |
 | **Relative Backrefs** | ❌ Not implemented | `\g{-1}` |
 | **Branch Reset** | ✅ Stable | `(?\|...)` |
 | **Script Runs** | ❌ Not implemented | `(*sr:)` |
@@ -98,7 +98,7 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 - **Zero Dependencies**: Only Zig standard library
 - **Linear Time Matching**: Thompson NFA guarantees O(n*m) worst-case
 - **Memory Safety**: Full control via Zig allocators, no hidden allocations, zero leaks
-- **143 Test Suite**: 139/143 tests passing (97%) - comprehensive MongoDB PCRE2 edge case coverage
+- **519 Test Suite**: 519/519 tests passing (100%) - comprehensive MongoDB PCRE2 edge case coverage
 - **Production Ready**: Core features stable, Unicode support complete, known limitations documented
 
 ## Installation
@@ -214,9 +214,9 @@ bun run build && bun test/ts/test_edge_cases.ts
 
 ## Test Results
 
-**Overall:** 139/143 tests passing (97%)
+**Overall:** 519/519 tests passing (100%)
 
-### ✅ Fully Working (135 tests)
+### ✅ Fully Working (519 tests)
 - Core regex features (anchors, quantifiers, character classes, groups)
 - Unicode support (8 scripts: Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
 - PCRE flags (`(*UTF)`, `(*UCP)`)
@@ -234,12 +234,12 @@ bun run build && bun test/ts/test_edge_cases.ts
 - **NEW: Any newline** `\R`
 - **NEW: Unicode property** `\p{Any}`
 - **NEW: Extended grapheme clusters** `\X` (UAX#29 compliant)
+- **NEW: Recursive patterns** `(?R)`, `(?0)`, `(?1)`-`(?9)` with depth limit
 
 ### ⚠️ Known Issues (0 tests)
 - None
 
-### ❌ Not Implemented (4 tests)
-- Recursive patterns `(?R)`
+### ❌ Not Implemented (3 tests)
 - Relative backreferences `\g{-1}`
 - Script runs `(*sr:)`
 - `(*BSR_UNICODE)` flag
@@ -286,7 +286,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ### Future
 - Script runs `(*sr:)`
 - Relative backreferences `\g{-1}`
-- Recursive patterns `(?R)`
 - `(*BSR_UNICODE)` flag
+- PCRE2 10.46+ `(?R(grouplist))` return captures from recursion
 
 See [UNSUPPORTED_FEATURES.md](UNSUPPORTED_FEATURES.md) for detailed prioritization.

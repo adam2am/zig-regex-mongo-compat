@@ -1,8 +1,8 @@
 # Regex Features Implementation Roadmap
 
 **Project:** zig-regex-mongo-compat  
-**Status:** 🚧 In Progress  
-**Current:** 472/472 tests passing (100%)
+**Status:** ✅ Complete  
+**Current:** 519/519 tests passing (100%)
 
 ---
 
@@ -12,8 +12,8 @@
 |---|---------|-----------|--------|--------|
 | 1 | `(?|...)` Branch Reset Groups | LOW | 4-8h | ✅ Complete |
 | 2 | `(?(1)yes|no)` Conditional Patterns | MEDIUM | 1-2d | ✅ Complete |
-| 3 | `\X` Extended Grapheme Clusters | MEDIUM-HIGH | 2-4d | ⬜ Not Started |
-| 4 | `(?R)` Recursive Patterns | HIGH | 4-7d | ⬜ Not Started |
+| 3 | `\X` Extended Grapheme Clusters | MEDIUM-HIGH | 2-4d | ✅ Complete |
+| 4 | `(?R)` Recursive Patterns | HIGH | 4-7d | ✅ Complete |
 
 ---
 
@@ -237,7 +237,7 @@
 **Priority:** 🔴 Highest Value  
 **Complexity:** MEDIUM-HIGH  
 **Estimated Effort:** 2-4 days  
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
 
 ### 📖 Specification
 
@@ -402,7 +402,27 @@
 **Priority:** 🟠 Advanced Feature  
 **Complexity:** HIGH  
 **Estimated Effort:** 4-7 days  
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
+
+### ✅ Implementation Complete
+
+**Commit:** `2d1063f`  
+**Tests:** 519/519 passing (100%)  
+**Files Modified:** 10 files
+
+**What was implemented:**
+- Added `escaped_literal` token type for proper `\]` handling in char classes
+- Implemented O(1) `group_lookup` table for recursion resolution
+- Added `matchRecursion()` with configurable depth limit (default 500)
+- Extracted `DEFAULT_MAX_RECURSION_DEPTH` constant to eliminate magic numbers
+- Improved `isSafeToQuantify` to recognize bounded concatenations
+- Added 12 comprehensive tests covering recursion, depth limits, forward references
+
+**Architecture:**
+- O(1) group lookup table pre-allocated at engine init
+- pushState/popState for "outer wins" capture semantics
+- Depth guard to prevent stack overflow (PCRE2 match_limit_recursion)
+- Token Contextual Coercion for proper char class parsing
 
 ### 📖 Specification
 
