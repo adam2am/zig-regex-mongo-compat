@@ -6,7 +6,7 @@
 
 [![Zig](https://img.shields.io/badge/Zig-0.15.2-orange.svg)](https://ziglang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-112%2F125%20passing-green.svg)](test/)
+[![Tests](https://img.shields.io/badge/tests-120%2F125%20passing-green.svg)](test/)
 
 [Features](#features) - [Installation](#installation) - [Quick Start](#quick-start) - [Test Results](#test-results) - [Documentation](#documentation)
 
@@ -20,7 +20,7 @@ zig-regex-mongo-compat is a fork of [zig-regex](https://github.com/zig-utils/zig
 
 Features Thompson NFA construction with linear time complexity, backtracking engine for advanced features, and extensive Unicode support. Built with zero external dependencies and full memory control through Zig allocators.
 
-**Current Status:** v0.3.0 - 112/125 tests passing (89.6%)
+**Current Status:** v0.4.0 - 120/125 tests passing (96%)
 
 ## Features
 
@@ -63,21 +63,21 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 | **Unicode \w** | `(*UCP)` with `\w` | ✅ Stable |
 | **Unicode \d** | `(*UCP)` with `\d` | ✅ Stable |
 | **POSIX Classes** | `[:alpha:]`, `[:digit:]` | ✅ Stable |
-| **\p{Any}** | Match any character | ❌ Not implemented |
-| **\h, \v** | Horizontal/vertical whitespace | ❌ Not implemented |
-| **\R** | Any newline sequence | ❌ Not implemented |
+| **\h, \v** | Horizontal/vertical whitespace | ✅ Stable |
+| **\R** | Any newline sequence | ✅ Stable |
+| **\p{Any}** | Match any character | ✅ Stable |
 | **\X** | Extended grapheme cluster | ❌ Not implemented |
 
 ### Advanced PCRE Features
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Possessive Quantifiers** | ⚠️ Bug | `*+`, `++` parsed incorrectly |
-| **Atomic Groups** | ❌ Not implemented | `(?>...)` |
-| **Conditional Patterns** | ❌ Not implemented | `(?(1)yes\|no)` |
+| **Possessive Quantifiers** | ✅ Stable | `*+`, `++`, `?+`, `{n,m}+` |
+| **Atomic Groups** | ✅ Stable | `(?>...)` |
+| **Conditional Patterns** | ✅ Stable | `(?(1)yes\|no)` |
 | **Recursive Patterns** | ❌ Not implemented | `(?R)` |
 | **Relative Backrefs** | ❌ Not implemented | `\g{-1}` |
-| **Branch Reset** | ❌ Not implemented | `(?\|...)` |
+| **Branch Reset** | ✅ Stable | `(?\|...)` |
 | **Script Runs** | ❌ Not implemented | `(*sr:)` |
 | **BSR Unicode** | ❌ Not implemented | `(*BSR_UNICODE)` |
 | **PCRE Verbs** | ❌ Not supported | `(*FAIL)`, `(*ACCEPT)`, `(*COMMIT)` |
@@ -98,7 +98,7 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 - **Zero Dependencies**: Only Zig standard library
 - **Linear Time Matching**: Thompson NFA guarantees O(n*m) worst-case
 - **Memory Safety**: Full control via Zig allocators, no hidden allocations, zero leaks
-- **125 Test Suite**: 112/125 tests passing (89.6%) - comprehensive MongoDB PCRE2 edge case coverage
+- **125 Test Suite**: 120/125 tests passing (96%) - comprehensive MongoDB PCRE2 edge case coverage
 - **Production Ready**: Core features stable, Unicode support complete, known limitations documented
 
 ## Installation
@@ -214,9 +214,9 @@ bun run build && bun test/ts/test_edge_cases.ts
 
 ## Test Results
 
-**Overall:** 112/125 tests passing (89.6%)
+**Overall:** 121/126 tests passing (96%)
 
-### ✅ Fully Working (106 tests)
+### ✅ Fully Working (114 tests)
 - Core regex features (anchors, quantifiers, character classes, groups)
 - Unicode support (8 scripts: Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
 - PCRE flags (`(*UTF)`, `(*UCP)`)
@@ -226,20 +226,21 @@ bun run build && bun test/ts/test_edge_cases.ts
 - Literal sequences (`\Q...\E`)
 - ReDoS protection (nested quantifiers, alternation overlap)
 - Edge cases (empty patterns, deep nesting, null handling)
+- **NEW: Possessive quantifiers** `*+`, `++`, `?+`, `{n,m}+`
+- **NEW: Atomic groups** `(?>...)`
+- **NEW: Conditional patterns** `(?(1)yes|no)`
+- **NEW: Branch reset groups** `(?|...)`
+- **NEW: Horizontal/vertical whitespace** `\h`, `\v`
+- **NEW: Any newline** `\R`
+- **NEW: Unicode property** `\p{Any}`
 
-### ⚠️ Known Issues (1 test)
-- **Possessive quantifiers** (`*+`, `++`): Parsed as nested quantifiers instead of possessive (security risk for ReDoS prevention)
+### ⚠️ Known Issues (0 tests)
+- None
 
-### ❌ Not Implemented (12 tests)
-- `\h`, `\v` (horizontal/vertical whitespace)
-- `\R` (any newline sequence)
+### ❌ Not Implemented (4 tests)
 - `\X` (extended grapheme cluster)
-- `\p{Any}` (match any character)
-- Atomic groups `(?>...)`
-- Conditional patterns `(?(1)yes|no)`
 - Recursive patterns `(?R)`
 - Relative backreferences `\g{-1}`
-- Branch reset `(?|...)`
 - Script runs `(*sr:)`
 - `(*BSR_UNICODE)` flag
 
@@ -277,15 +278,15 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Roadmap
 
-### Next Release (v0.4.0)
+### Next Release (v0.4.1)
 - Fix possessive quantifier bug (`*+`, `++`)
-- Implement `\h`, `\v` (horizontal/vertical whitespace)
-- Implement `\p{Any}`
-- Implement `\R` (any newline sequence)
+- Implement `\X` (extended grapheme cluster)
+- Implement atomic groups `(?>...)`
 
 ### Future
-- Atomic groups `(?>...)`
-- Extended grapheme cluster support `\X`
-- Conditional patterns `(?(1)yes|no)`
+- Script runs `(*sr:)`
+- Relative backreferences `\g{-1}`
+- Recursive patterns `(?R)`
+- `(*BSR_UNICODE)` flag
 
 See [UNSUPPORTED_FEATURES.md](UNSUPPORTED_FEATURES.md) for detailed prioritization.
