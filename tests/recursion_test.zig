@@ -317,3 +317,142 @@ test "(?R(grouplist)): empty grouplist is treated as no keep groups" {
 
     try std.testing.expect(try regex.isMatch("aabb"));
 }
+
+test "(?R(grouplist)): named groups (?1(<name>))" {
+    const allocator = std.testing.allocator;
+    // (?1(<val>)) will recurse into group 1, and keep the inner capture of named group 'val'
+    var regex = try Regex.compile(allocator, "^(a(?P<val>b|c))(?1(<val>))d$");
+    defer regex.deinit();
+
+    if (try regex.find("abacd")) |match| {
+        defer {
+            var mut_match = match;
+            mut_match.deinit(allocator);
+        }
+        // Outer captured 'b', inner captured 'c'. Because we kept <val>, we expect 'c'.
+        const val = regex.getNamedCapture(&match, "val");
+        try std.testing.expect(val != null);
+        try std.testing.expectEqualStrings("c", val.?);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}
+
+test "(?R(grouplist)): relative numbers (?1(-1))" {
+    const allocator = std.testing.allocator;
+    // (a)(?1(-1))(b)
+    // (?-1) refers to the last opened group (group 1)
+    var regex = try Regex.compile(allocator, "^(a)(?1(-1))(b)$");
+    defer regex.deinit();
+
+    if (try regex.find("aab")) |match| {
+        defer {
+            var mut_match = match;
+            mut_match.deinit(allocator);
+        }
+        try std.testing.expectEqualStrings("a", match.captures[0]);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}
+
+test "(?R(grouplist)): relative +0 - same group" {
+    const allocator = std.testing.allocator;
+    // (?1(+0)) means keep the same group we recurse into (group 1)
+    // Pattern: ^(a)(?1(+0))a$ matches "aaa"
+    // - (a) captures 'a' into group 1
+    // - (?1(+0)) recurses into group 1, matches next 'a', +0 keeps group 1 patched
+    // - a matches final char, $ matches end
+    var regex = try Regex.compile(allocator, "^(a)(?1(+0))a$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("aaa"));
+}
+
+test "(?R(grouplist)): mixed index and named" {
+    const allocator = std.testing.allocator;
+    // Named group 'inner' is group 2, keep by name
+    // Group 1 is 'a', keep by index
+    var regex = try Regex.compile(allocator, "^(a)(?P<inner>b)\\1(?1(1,<inner>))$");
+    defer regex.deinit();
+
+    // "ab" + "ab" + recurse group 1 (which is "a") at position 4 - fails because end of string
+    // Just test that compilation works (parsing named keep groups)
+    try std.testing.expect(!try regex.isMatch("abab"));
+}
+
+// ============================================================================
+// +0 Call-Site Semantics Tests (PCRE2 10.46+)
+// ============================================================================
+
+test "(?R(grouplist)): +0 resolves to enclosing group at call site" {
+    const allocator = std.testing.allocator;
+
+    // Pattern: ^(a(?1(+0))?b)$
+    // Group 1 is (a(?1(+0))?b).
+    // Call site is inside group 1, so +0 resolves to 1.
+    var regex = try Regex.compile(allocator, "^(a(?1(+0))?b)$");
+    defer regex.deinit();
+
+    // It should match without infinite recursion or crashing
+    try std.testing.expect(try regex.isMatch("aabb"));
+}
+
+test "(?R(grouplist)): +0 at top level resolves to whole pattern (group 0)" {
+    const allocator = std.testing.allocator;
+    // Pattern: (a)(b)(c)(?1(+0))d$
+    // - Groups 1, 2, 3 are opened AND CLOSED before the call site
+    // - Call site (?1(+0)) is at TOP LEVEL (no group is open)
+    // - +0 should resolve to group 0 (whole pattern), NOT group 1
+    var regex = try Regex.compile(allocator, "(a)(b)(c)(?1(+0))d$");
+    defer regex.deinit();
+
+    // The pattern should match:
+    // (a) captures 'a' → group 1
+    // (b) captures 'b' → group 2
+    // (c) captures 'c' → group 3
+    // (?1(+0)) recurses into group 1, matches 'a', +0 keeps group 0 (whole pattern)
+    // d$ matches 'd'
+    // Expected: "abcad"
+    try std.testing.expect(try regex.isMatch("abcad"));
+}
+
+
+// ============================================================================
+// (?&name) and (?P>name) - Named Subroutine Calls
+// ============================================================================
+
+test "(?&name): call subroutine by name" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(?<first>a)(?&first)b$");
+    defer regex.deinit();
+
+    // a + recurse 'first' (a) + b
+    try std.testing.expect(try regex.isMatch("aab"));
+}
+
+test "(?P>name): call subroutine by Python name" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(?P<first>a)(?P>first)b$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("aab"));
+}
+
+test "(?-1): relative backward call" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(a)(?-1)b$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("aab"));
+}
+
+test "(?+1): relative forward call" {
+    const allocator = std.testing.allocator;
+    // (?+1) calls the next group. Here we define (a) after the call,
+    // which makes it a forward reference.
+    var regex = try Regex.compile(allocator, "^(?+1)(a)b$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("aab"));
+}

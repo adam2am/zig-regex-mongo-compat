@@ -160,9 +160,15 @@ pub const Node = struct {
         kind: union(enum) {
             whole_pattern, // (?R) or (?0) - recurse entire pattern
             group_number: usize, // (?1), (?2), etc. - recurse specific group
-            // Future: group_name: []const u8, // (?&name) - recurse named group
+            group_name: []const u8, // (?&name) or (?P>name) - recurse specific named group
         },
-        keep_groups: ?[]const usize = null,
+        keep_groups: ?[]const KeepGroup = null,
+    };
+
+    /// Group identifier for recursion retention list
+    pub const KeepGroup = union(enum) {
+        index: usize,
+        name: []const u8,
     };
 
     pub fn createRecursion(allocator: std.mem.Allocator, recursion: RecursionTarget, span: common.Span) !*Node {

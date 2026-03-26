@@ -292,6 +292,7 @@ pub const Parser = struct {
     recursion_depth: usize,
     flag_stack: std.ArrayList(common.CompileFlags),
     reset_stack: std.ArrayList(usize), // Track capture_count at (?| entry for branch reset groups
+    open_groups: std.ArrayList(usize), // Stack of currently open capturing groups
     state: ParserState = .parsing,
 
     /// Maximum nesting depth to prevent stack overflow from patterns like (((((...
@@ -311,6 +312,7 @@ pub const Parser = struct {
         try flag_stack.append(allocator, flags); // Push base flags
 
         const reset_stack = try std.ArrayList(usize).initCapacity(allocator, 1);
+        const open_groups = try std.ArrayList(usize).initCapacity(allocator, 4);
 
         return .{
             .lexer = lexer,
@@ -322,6 +324,7 @@ pub const Parser = struct {
             .recursion_depth = 0,
             .flag_stack = flag_stack,
             .reset_stack = reset_stack,
+            .open_groups = open_groups,
             .state = .parsing,
         };
     }
@@ -357,6 +360,7 @@ pub const Parser = struct {
         }
         self.flag_stack.deinit(self.allocator);
         self.reset_stack.deinit(self.allocator);
+        self.open_groups.deinit(self.allocator);
     }
 
     pub fn currentFlags(self: *Parser) common.CompileFlags {
@@ -1019,36 +1023,53 @@ pub const Parser = struct {
                     }
 
                     // Check what follows the ?
-                    if (self.current_token.token_type == .literal) {
-                        if (self.current_token.value == ':') {
+                    if (self.current_token.token_type == .literal or self.current_token.token_type == .plus) {
+                        if (self.current_token.token_type == .literal and self.current_token.value == ':') {
                             // Non-capturing group (?:...)
                             try self.advance(); // consume :
                             // capture_index remains null
-                        } else if (self.current_token.value == '=') {
+                        } else if (self.current_token.token_type == .literal and self.current_token.value == '=') {
                             // Positive lookahead (?=...)
                             try self.advance(); // consume =
                             const child = try self.parseAlternation();
                             try self.expect(.rparen);
                             return ast.Node.createLookahead(self.astAllocator(), child, true, span);
-                        } else if (self.current_token.value == '!') {
+                        } else if (self.current_token.token_type == .literal and self.current_token.value == '!') {
                             // Negative lookahead (?!...)
                             try self.advance(); // consume !
                             const child = try self.parseAlternation();
                             try self.expect(.rparen);
                             return ast.Node.createLookahead(self.astAllocator(), child, false, span);
-                        } else if (self.current_token.value == '>') {
+                        } else if (self.current_token.token_type == .literal and self.current_token.value == '>') {
                             // Atomic group (?>...)
                             try self.advance(); // consume >
                             const child = try self.parseAlternation();
                             try self.expect(.rparen);
                             return ast.Node.createAtomicGroup(self.astAllocator(), child, span);
-                        } else if (self.current_token.value == 'R' or self.current_token.value == '0') {
+                        } else if (self.current_token.token_type == .literal and (self.current_token.value == 'R' or self.current_token.value == '0')) {
                             // Recursive pattern: (?R) or (?0) - recurse entire pattern
                             try self.advance(); // consume R or 0
                             const keep_groups = try self.parseRecursionKeepList();
                             try self.expect(.rparen);
                             return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .whole_pattern, .keep_groups = keep_groups }, span);
-                        } else if (self.current_token.value >= '1' and self.current_token.value <= '9') {
+                        } else if (self.current_token.token_type == .plus or (self.current_token.token_type == .literal and self.current_token.value == '-')) {
+                            // Positive or negative relative recursion: (?+1), (?-2)
+                            const is_negative = self.current_token.token_type == .literal and self.current_token.value == '-';
+                            try self.advance(); // consume + or -
+                            var num: usize = 0;
+                            while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                                num = num * 10 + (self.current_token.value - '0');
+                                try self.advance();
+                            }
+                            if (num == 0) return RegexError.UnexpectedCharacter;
+                            if (is_negative and num > self.capture_count + 1) {
+                                return RegexError.UnexpectedCharacter;
+                            }
+                            const resolved = if (is_negative) self.capture_count + 1 - num else self.capture_count + num;
+                            const keep_groups = try self.parseRecursionKeepList();
+                            try self.expect(.rparen);
+                            return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .{ .group_number = resolved }, .keep_groups = keep_groups }, span);
+                        } else if (self.current_token.token_type == .literal and self.current_token.value >= '1' and self.current_token.value <= '9') {
                             // Recursive pattern: (?1), (?2), etc. - recurse specific group
                             var num: usize = 0;
                             while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
@@ -1058,17 +1079,32 @@ pub const Parser = struct {
                             const keep_groups = try self.parseRecursionKeepList();
                             try self.expect(.rparen);
                             return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .{ .group_number = num }, .keep_groups = keep_groups }, span);
-                        } else if (self.current_token.value == 'P') {
-                            // Python-style named group (?P<name>...)
+                        } else if (self.current_token.token_type == .literal and self.current_token.value == '&') {
+                            // Perl-style named recursion (?&name)
+                            try self.advance(); // consume &
+                            const name = try self.parseNameUntil("()");
+                            const keep_groups = try self.parseRecursionKeepList();
+                            try self.expect(.rparen);
+                            return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .{ .group_name = name }, .keep_groups = keep_groups }, span);
+                        } else if (self.current_token.token_type == .literal and self.current_token.value == 'P') {
                             try self.advance(); // consume P
-                            if (self.current_token.token_type != .literal or self.current_token.value != '<') {
+                            if (self.current_token.token_type == .literal and self.current_token.value == '>') {
+                                // Python-style named subroutine (?P>name)
+                                try self.advance(); // consume >
+                                const name = try self.parseNameUntil("()");
+                                const keep_groups = try self.parseRecursionKeepList();
+                                try self.expect(.rparen);
+                                return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .{ .group_name = name }, .keep_groups = keep_groups }, span);
+                            } else if (self.current_token.token_type == .literal and self.current_token.value == '<') {
+                                // Python-style named group (?P<name>...)
+                                try self.advance(); // consume <
+                                group_name = try self.parseGroupName();
+                                self.capture_count += 1;
+                                capture_index = self.capture_count;
+                            } else {
                                 return RegexError.UnexpectedCharacter;
                             }
-                            try self.advance(); // consume <
-                            group_name = try self.parseGroupName();
-                            self.capture_count += 1;
-                            capture_index = self.capture_count;
-                        } else if (self.current_token.value == '<') {
+                        } else if (self.current_token.token_type == .literal and self.current_token.value == '<') {
                             // Check if it's lookbehind or named group
                             // Need to peek ahead to distinguish (?<=...) from (?<name>...)
                             const saved_pos = self.lexer.pos;
@@ -1115,12 +1151,22 @@ pub const Parser = struct {
                     capture_index = self.capture_count;
                 }
 
+                // Push to open_groups if capturing
+                if (capture_index) |idx| {
+                    try self.open_groups.append(self.allocator, idx);
+                }
+
                 // Push current flags for this group scope
                 try self.flag_stack.append(self.allocator, self.currentFlags());
                 defer _ = self.flag_stack.pop();
 
                 const child = try self.parseAlternation();
                 try self.expect(.rparen);
+
+                // Pop from open_groups if capturing
+                if (capture_index) |_| {
+                    _ = self.open_groups.pop();
+                }
 
                 if (group_name) |name| {
                     return ast.Node.createNamedGroup(self.astAllocator(), child, capture_index, name, span);
@@ -1137,44 +1183,51 @@ pub const Parser = struct {
         }
     }
 
-    /// Parse group name from (?P<name>...) or (?<name>...)
-    /// Expects current token to be first character of name
-    /// Consumes tokens until > is found
-    fn parseGroupName(self: *Parser) ![]const u8 {
+    /// Parse a name until we hit any of the stop characters
+    /// Used for both group names and subroutine names
+    fn parseNameUntil(self: *Parser, stop_chars: []const u8) ![]const u8 {
         var name_buf: [64]u8 = undefined;
         var name_len: usize = 0;
 
-        // Collect name characters until we hit >
+        // Collect name characters until we hit a stop character
         while (self.current_token.token_type != .eof) {
             if (self.current_token.token_type == .literal) {
-                if (self.current_token.value == '>') {
-                    try self.advance(); // consume >
+                const c = self.current_token.value;
+                // Check if this is a stop character
+                if (std.mem.indexOfScalar(u8, stop_chars, c) != null) {
                     break;
                 }
 
                 // Valid name characters: alphanumeric and underscore
-                const c = self.current_token.value;
                 if ((c >= 'a' and c <= 'z') or
                     (c >= 'A' and c <= 'Z') or
                     (c >= '0' and c <= '9') or
                     c == '_')
                 {
                     if (name_len >= name_buf.len) {
-                        return RegexError.InvalidCharacterClass; // Name too long
+                        return RegexError.InvalidCharacterClass;
                     }
                     name_buf[name_len] = c;
                     name_len += 1;
                     try self.advance();
                 } else {
-                    return RegexError.InvalidCharacterClass; // Invalid character in name
+                    return RegexError.InvalidCharacterClass;
                 }
+            } else if (self.current_token.token_type == .lparen) {
+                // Check if ( is a stop character
+                if (std.mem.indexOfScalar(u8, stop_chars, '(') != null) break;
+                return RegexError.InvalidCharacterClass;
+            } else if (self.current_token.token_type == .rparen) {
+                // Check if ) is a stop character
+                if (std.mem.indexOfScalar(u8, stop_chars, ')') != null) break;
+                return RegexError.InvalidCharacterClass;
             } else {
-                return RegexError.InvalidCharacterClass; // Unexpected token in name
+                return RegexError.InvalidCharacterClass;
             }
         }
 
         if (name_len == 0) {
-            return RegexError.InvalidCharacterClass; // Empty name
+            return RegexError.InvalidCharacterClass;
         }
 
         // Allocate and copy name
@@ -1183,49 +1236,112 @@ pub const Parser = struct {
         return name;
     }
 
+    /// Parse group name from (?P<name>...) or (?<name>...)
+    /// Expects current token to be first character of name
+    /// Consumes tokens until > is found
+    fn parseGroupName(self: *Parser) ![]const u8 {
+        const name = try self.parseNameUntil(">");
+        try self.advance(); // consume >
+        return name;
+    }
+
     /// Parse the optional grouplist for (?R(n1,n2)) or (?1(n1,n2))
-    /// e.g., (1,2,3) - returns slice of group indices to keep
+    /// e.g., (1,2,3), (+1,-2), (<name>,'name') - returns slice of KeepGroup
     /// Returns null if no grouplist present (current token is NOT lparen)
-    /// If returns non-null, caller should NOT consume the closing paren - it's already consumed
-    fn parseRecursionKeepList(self: *Parser) !?[]const usize {
-        // Check if we have a grouplist - if not, return null without modifying state
+    fn parseRecursionKeepList(self: *Parser) !?[]const ast.Node.KeepGroup {
         if (self.current_token.token_type != .lparen) {
             return null;
         }
-        // We have '(' - parse the list
         try self.advance(); // consume '('
 
         const allocator = self.astAllocator();
-        var group_list = try std.ArrayList(usize).initCapacity(allocator, 4);
+        var group_list = try std.ArrayList(ast.Node.KeepGroup).initCapacity(allocator, 4);
         errdefer group_list.deinit(allocator);
 
         while (self.current_token.token_type != .eof) {
-            // Check for closing paren
             if (self.current_token.token_type == .rparen) {
                 try self.advance(); // consume ')'
                 break;
             }
 
-            // Parse number - must start with digit
-            if (self.current_token.token_type == .literal and
-                self.current_token.value >= '0' and self.current_token.value <= '9')
-            {
+            // Relative offset: +1 or -2 (PCRE2 syntax)
+            // NOTE: '+' is tokenized as .plus (line 234), not .literal
+            // '-' falls through as .literal since it's not a special token
+            if (self.current_token.token_type == .plus) {
+                // Positive relative offset like +1, +2
+                try self.advance(); // consume +
                 var num: usize = 0;
-                while (self.current_token.token_type == .literal and
-                    self.current_token.value >= '0' and self.current_token.value <= '9')
-                {
+                while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
                     num = num * 10 + (self.current_token.value - '0');
                     try self.advance();
                 }
-                try group_list.append(allocator, num);
-
-                // Skip comma if present, or check for closing paren
-                if (self.current_token.token_type == .literal and self.current_token.value == ',') {
-                    try self.advance(); // consume ','
-                } else if (self.current_token.token_type != .rparen) {
-                    return RegexError.UnexpectedCharacter;
+                if (num == 0) {
+                    // +0 refers to the enclosing group at the call site (or 0 if top-level)
+                    const resolved = if (self.open_groups.items.len > 0)
+                        self.open_groups.items[self.open_groups.items.len - 1]
+                    else
+                        0;
+                    try group_list.append(allocator, .{ .index = resolved });
+                } else {
+                    const resolved = self.capture_count + num;
+                    try group_list.append(allocator, .{ .index = resolved });
                 }
+            } else if (self.current_token.token_type == .literal and self.current_token.value == '-') {
+                // Negative relative offset like -1, -2
+                try self.advance(); // consume -
+                var num: usize = 0;
+                while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                    num = num * 10 + (self.current_token.value - '0');
+                    try self.advance();
+                }
+                if (num == 0) {
+                    // -0 is the same as +0 (enclosing group at call site)
+                    const resolved = if (self.open_groups.items.len > 0)
+                        self.open_groups.items[self.open_groups.items.len - 1]
+                    else
+                        0;
+                    try group_list.append(allocator, .{ .index = resolved });
+                } else {
+                    const resolved = self.capture_count + 1 - num;
+                    try group_list.append(allocator, .{ .index = resolved });
+                }
+            }
+            // Absolute index: 1, 2, 3
+            else if (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                var num: usize = 0;
+                while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                    num = num * 10 + (self.current_token.value - '0');
+                    try self.advance();
+                }
+                try group_list.append(allocator, .{ .index = num });
+            }
+            // Named group: <name> or 'name'
+            else if (self.current_token.token_type == .literal and (self.current_token.value == '<' or self.current_token.value == '\'')) {
+                const close_quote: u8 = if (self.current_token.value == '<') '>' else '\'';
+                try self.advance(); // consume < or '
+
+                var name_buf: [64]u8 = undefined;
+                var name_len: usize = 0;
+                while (self.current_token.token_type == .literal and self.current_token.value != close_quote) {
+                    if (name_len >= name_buf.len) return RegexError.InvalidGroupName;
+                    name_buf[name_len] = self.current_token.value;
+                    name_len += 1;
+                    try self.advance();
+                }
+                if (self.current_token.token_type != .literal or self.current_token.value != close_quote) {
+                    return RegexError.InvalidGroupName;
+                }
+                try self.advance(); // consume closing quote
+
+                const name_dup = try allocator.dupe(u8, name_buf[0..name_len]);
+                try group_list.append(allocator, .{ .name = name_dup });
             } else {
+                return RegexError.UnexpectedCharacter;
+            }
+
+            if (self.current_token.token_type == .literal and self.current_token.value == ',') {
+                try self.advance(); // consume ','
+            } else if (self.current_token.token_type != .rparen) {
                 return RegexError.UnexpectedCharacter;
             }
         }

@@ -48,6 +48,8 @@ pub const BacktrackEngine = struct {
     max_steps: usize,
     /// Hard-abort flag to short-circuit ReDoS loops across all finding attempts
     aborted: bool,
+    /// Reference to named capture table mapping names to indices
+    named_captures: *const std.StringHashMap(usize),
 
     pub const CaptureGroup = struct {
         start: usize,
@@ -61,7 +63,7 @@ pub const BacktrackEngine = struct {
     /// Default maximum recursion depth (prevents stack overflow on deeply recursive patterns)
     pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 500;
 
-    pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags) !BacktrackEngine {
+    pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags, named_captures: *const std.StringHashMap(usize)) !BacktrackEngine {
         const captures = try allocator.alloc(CaptureGroup, capture_count);
         for (captures) |*cap| {
             cap.* = .{ .start = 0, .end = 0, .matched = false };
@@ -86,6 +88,7 @@ pub const BacktrackEngine = struct {
             .step_count = 0,
             .max_steps = DEFAULT_MAX_STEPS,
             .aborted = false,
+            .named_captures = named_captures,
         };
 
         // Build O(1) lookup table
@@ -149,6 +152,12 @@ pub const BacktrackEngine = struct {
                 if (num == 0 or num >= self.group_lookup.len) break :blk null;
                 break :blk self.group_lookup[num];
             },
+            .group_name => |name| blk: {
+                if (self.named_captures.get(name)) |num| {
+                    if (num > 0 and num < self.group_lookup.len) break :blk self.group_lookup[num];
+                }
+                break :blk null;
+            },
         };
 
         if (target_node == null) return null;
@@ -167,9 +176,14 @@ pub const BacktrackEngine = struct {
         // before we pop it, ensuring specified groups retain their inner values.
         if (result_pos != null) {
             if (recursion.keep_groups) |keeps| {
-                for (keeps) |g| {
-                    if (g > 0 and g <= self.captures.len) {
-                        const idx = g - 1;
+                for (keeps) |kg| {
+                    // Resolve group: either by index or by name lookup
+                    const group_idx = switch (kg) {
+                        .index => |idx| idx,
+                        .name => |name| self.named_captures.get(name) orelse 0,
+                    };
+                    if (group_idx > 0 and group_idx <= self.captures.len) {
+                        const idx = group_idx - 1;
                         // Write inner capture directly into the saved outer state
                         self.state_stack.items[stack_base + idx] = self.captures[idx];
                     }
@@ -1217,7 +1231,10 @@ test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
     // Input that doesn't match but would cause catastrophic backtracking
     const input = "aaaaaaaaaaaaaaaaaaaac";
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{});
+    var named_captures = std.StringHashMap(usize).init(allocator);
+    defer named_captures.deinit();
+
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
     defer engine.deinit();
 
     // Should timeout/abort instead of hanging
@@ -1252,7 +1269,10 @@ test "backtrack: ReDoS protection - nested stars (a*)*b" {
 
     const input = "aaaaaaaaaaaaaaaaaac";
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{});
+    var named_captures = std.StringHashMap(usize).init(allocator);
+    defer named_captures.deinit();
+
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
     defer engine.deinit();
 
     const result = engine.find(input);
@@ -1279,7 +1299,10 @@ test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
 
     const input = "aaaaaaaaaaaaaaaac";
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{});
+    var named_captures = std.StringHashMap(usize).init(allocator);
+    defer named_captures.deinit();
+
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
     defer engine.deinit();
 
     const result = engine.find(input);
@@ -1306,7 +1329,10 @@ test "backtrack: configurable step limit" {
 
     const input = "aaaaaaaaaaaac";
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{});
+    var named_captures = std.StringHashMap(usize).init(allocator);
+    defer named_captures.deinit();
+
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
     defer engine.deinit();
 
     // Set a very low limit to test timeout behavior
@@ -1339,7 +1365,10 @@ test "backtrack: step counter increments" {
 
     const input = "aaaabbbbb";
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{});
+    var named_captures = std.StringHashMap(usize).init(allocator);
+    defer named_captures.deinit();
+
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
     defer engine.deinit();
 
     const initial_count = engine.step_count;

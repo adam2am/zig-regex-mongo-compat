@@ -183,12 +183,16 @@ pub const PrettyPrinter = struct {
                 switch (rec.kind) {
                     .whole_pattern => try writer.writeAll("Recursion (whole pattern) (?R)"),
                     .group_number => |n| try writer.print("Recursion (group {d}) (?{d})", .{ n, n }),
+                    .group_name => |n| try writer.print("Recursion (group '{s}') (?&{s})", .{ n, n }),
                 }
                 if (rec.keep_groups) |keeps| {
                     try writer.writeAll(" keep(");
-                    for (keeps, 0..) |g, i| {
+                    for (keeps, 0..) |kg, i| {
                         if (i > 0) try writer.writeAll(",");
-                        try writer.print("{d}", .{g});
+                        switch (kg) {
+                            .index => |idx| try writer.print("{d}", .{idx}),
+                            .name => |name| try writer.print("<{s}>", .{name}),
+                        }
                     }
                     try writer.writeAll(")");
                 }
@@ -217,9 +221,18 @@ pub const PrettyPrinter = struct {
                 switch (rec.kind) {
                     .whole_pattern => try writer.writeAll("(recursion whole-pattern"),
                     .group_number => |n| try writer.print("(recursion group-{d}", .{n}),
+                    .group_name => |n| try writer.print("(recursion group-'{s}'", .{n}),
                 }
-                if (rec.keep_groups) |_| {
-                    try writer.writeAll(" keep-groups");
+                if (rec.keep_groups) |keeps| {
+                    try writer.writeAll(" (keep ");
+                    for (keeps, 0..) |kg, i| {
+                        if (i > 0) try writer.writeAll(",");
+                        switch (kg) {
+                            .index => |idx| try writer.print("{d}", .{idx}),
+                            .name => |name| try writer.print("<{s}>", .{name}),
+                        }
+                    }
+                    try writer.writeAll(")");
                 }
                 try writer.writeAll(")");
             },
@@ -404,12 +417,16 @@ pub const PrettyPrinter = struct {
                 switch (rec.kind) {
                     .whole_pattern => try writer.writeAll("(?R"),
                     .group_number => |n| try writer.print("(?{d}", .{n}),
+                    .group_name => |n| try writer.print("(?&{s}", .{n}),
                 }
                 if (rec.keep_groups) |keeps| {
                     try writer.writeAll("(");
-                    for (keeps, 0..) |g, i| {
+                    for (keeps, 0..) |kg, i| {
                         if (i > 0) try writer.writeAll(",");
-                        try writer.print("{d}", .{g});
+                        switch (kg) {
+                            .index => |idx| try writer.print("{d}", .{idx}),
+                            .name => |name| try writer.print("<{s}>", .{name}),
+                        }
                     }
                     try writer.writeAll(")");
                 }
