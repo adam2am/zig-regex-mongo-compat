@@ -43,11 +43,7 @@ test "isLetter - Unicode letters" {
 }
 
 test "CharClass with unicode_property - digit" {
-    const char_class = regex.common.CharClass{
-        .ranges = &[_]regex.common.CharRange{},
-        .negated = false,
-        .unicode_property = .digit,
-    };
+    const char_class = regex.common.CharClass.initWithProperty(.digit, false);
 
     // ASCII digits
     try testing.expect(char_class.matches('0'));
@@ -64,11 +60,7 @@ test "CharClass with unicode_property - digit" {
 }
 
 test "CharClass with unicode_property - letter" {
-    const char_class = regex.common.CharClass{
-        .ranges = &[_]regex.common.CharRange{},
-        .negated = false,
-        .unicode_property = .letter,
-    };
+    const char_class = regex.common.CharClass.initWithProperty(.letter, false);
 
     // ASCII letters
     try testing.expect(char_class.matches('a'));

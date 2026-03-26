@@ -46,6 +46,8 @@ pub const BacktrackEngine = struct {
     step_count: usize,
     /// Maximum steps before aborting (prevents catastrophic backtracking)
     max_steps: usize,
+    /// Hard-abort flag to short-circuit ReDoS loops across all finding attempts
+    aborted: bool,
 
     pub const CaptureGroup = struct {
         start: usize,
@@ -83,6 +85,7 @@ pub const BacktrackEngine = struct {
             .disable_lazy_backtrack = false,
             .step_count = 0,
             .max_steps = DEFAULT_MAX_STEPS,
+            .aborted = false,
         };
 
         // Build O(1) lookup table
@@ -177,6 +180,7 @@ pub const BacktrackEngine = struct {
     /// Find first match in input
     pub fn find(self: *BacktrackEngine, input: []const u8) ?BacktrackMatch {
         self.input = input;
+        self.aborted = false; // Reset abort for new search attempt
         // REMOVED: This flag broke lazy quantifiers by preventing expansion
         // Lazy quantifiers need backtracking to work correctly
         // self.disable_lazy_backtrack = true;
@@ -184,6 +188,7 @@ pub const BacktrackEngine = struct {
 
         var pos: usize = 0;
         while (pos <= input.len) : (pos += 1) {
+            if (self.aborted) return null; // Hard break if previous start position hit ReDoS limits
             self.resetCaptures();
             self.state_stack.shrinkRetainingCapacity(0); // Clear state stack to prevent memory leaks
             self.step_count = 0; // Reset step counter per starting position
@@ -245,9 +250,12 @@ pub const BacktrackEngine = struct {
     /// Match a node starting at position, returns end position or null if no match
     /// Returns position where match ended, or null if no match
     pub fn matchNode(self: *BacktrackEngine, node: *ast.Node, pos: usize) ?usize {
+        if (self.aborted) return null;
+
         // ReDoS protection: increment step counter and check limit
         self.step_count += 1;
         if (self.step_count > self.max_steps) {
+            self.aborted = true; // Hard lock the engine from continuing
             return null; // Abort matching to prevent catastrophic backtracking
         }
 
@@ -368,9 +376,12 @@ pub const BacktrackEngine = struct {
                 const stack_base = self.pushState() catch continue;
 
                 if (self.matchNode(concat.right, left_end)) |result| {
+                    // SUCCESS: Keep captures from right side, but clean up stack
+                    self.dropState(stack_base);
                     return result;
                 }
 
+                // FAILURE: Pop state to restore pre-concat captures
                 self.popState(stack_base);
             }
             return null;
@@ -869,10 +880,16 @@ pub const BacktrackEngine = struct {
         return stack_base;
     }
 
-    /// Pop captures from the stack back to current state
+    /// Pop captures from the stack back to current state (used on FAILURE - restores pre-match state)
     inline fn popState(self: *BacktrackEngine, stack_base: usize) void {
         const saved_slice = self.state_stack.items[stack_base .. stack_base + self.captures.len];
         @memcpy(self.captures, saved_slice);
+        self.state_stack.shrinkRetainingCapacity(stack_base);
+    }
+
+    /// Drop saved state from the stack WITHOUT restoring captures (used on SUCCESS - keeps captures, frees stack)
+    /// This is the O(1) cleanup primitive that makes nested recursion safe
+    inline fn dropState(self: *BacktrackEngine, stack_base: usize) void {
         self.state_stack.shrinkRetainingCapacity(stack_base);
     }
 

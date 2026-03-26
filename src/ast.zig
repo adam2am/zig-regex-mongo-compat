@@ -265,10 +265,15 @@ pub const Node = struct {
     }
 
     pub fn createCharClass(allocator: std.mem.Allocator, char_class: common.CharClass, ignore_case: bool, span: common.Span) !*Node {
+        // CRITICAL: Ensure fast_ascii bitset is initialized for Backtracking engine
+        // The Backtracker operates directly on AST, not NFA, so we need precomputed bitset here
+        var cc = char_class;
+        cc.precompute();
+
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .char_class,
-            .data = .{ .char_class = .{ .class = char_class, .ignore_case = ignore_case } },
+            .data = .{ .char_class = .{ .class = cc, .ignore_case = ignore_case } },
             .span = span,
         };
         return node;

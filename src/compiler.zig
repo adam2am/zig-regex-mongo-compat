@@ -51,15 +51,16 @@ pub const Transition = struct {
     pub fn charClass(allocator: std.mem.Allocator, class: common.CharClass, ignore_case: bool, to: StateId) !Transition {
         // Duplicate the ranges so we own them and can free them later
         const ranges_copy = try allocator.dupe(common.CharRange, class.ranges);
+        // Use struct update syntax to safely copy ALL fields (including fast_ascii)
+        var compiled_class = class;
+        compiled_class.ranges = ranges_copy;
+        // Precompute the FastBitSet at the Compiler boundary (not Parser)
+        compiled_class.precompute();
         return .{
             .transition_type = .char_class,
             .to = to,
             .data = .{ .char_class = .{
-                .class = .{
-                    .ranges = ranges_copy,
-                    .negated = class.negated,
-                    .unicode_property = class.unicode_property,
-                },
+                .class = compiled_class,
                 .ignore_case = ignore_case,
             } },
         };

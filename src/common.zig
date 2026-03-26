@@ -1,5 +1,18 @@
 const std = @import("std");
 
+/// 256-bit set for O(1) ASCII and Latin-1 character class lookups
+pub const FastBitSet = struct {
+    bits: [4]u64 = .{ 0, 0, 0, 0 },
+
+    pub inline fn set(self: *FastBitSet, c: u8) void {
+        self.bits[c >> 6] |= (@as(u64, 1) << @intCast(c & 63));
+    }
+
+    pub inline fn testBit(self: *const FastBitSet, c: u8) bool {
+        return (self.bits[c >> 6] & (@as(u64, 1) << @intCast(c & 63))) != 0;
+    }
+};
+
 /// Character type used throughout the library
 /// u21 supports full Unicode codepoints (U+0000 to U+10FFFF)
 pub const Char = u21;
@@ -26,6 +39,7 @@ pub const CharClass = struct {
     ranges: []const CharRange,
     negated: bool = false,
     unicode_property: ?UnicodeProperty = null,
+    fast_ascii: FastBitSet = .{},
 
     pub const UnicodeProperty = union(enum) {
         digit,
@@ -37,7 +51,46 @@ pub const CharClass = struct {
         pub const Script = @import("unicode_properties.zig").Script;
     };
 
-    pub fn matches(self: CharClass, c: Char) bool {
+    /// Precomputes the FastBitSet for ASCII/Latin-1 characters (0-255)
+    /// Must be called immediately after initialization
+    pub fn precompute(self: *CharClass) void {
+        for (0..256) |i| {
+            const char_val: Char = @intCast(i);
+            var is_match = false;
+
+            if (self.unicode_property) |prop| {
+                const unicode = @import("unicode.zig");
+                const unicode_properties = @import("unicode_properties.zig");
+                is_match = switch (prop) {
+                    .digit => unicode.isDigit(char_val),
+                    .letter => unicode.isLetter(char_val),
+                    .alnum => unicode.isAlphanumeric(char_val),
+                    .any => true,
+                    .script => |s| unicode_properties.matchesScript(char_val, s),
+                };
+            } else {
+                for (self.ranges) |range| {
+                    if (range.contains(char_val)) {
+                        is_match = true;
+                        break;
+                    }
+                }
+            }
+
+            if (is_match) {
+                self.fast_ascii.set(@intCast(i));
+            }
+        }
+    }
+
+    pub inline fn matches(self: *const CharClass, c: Char) bool {
+        // 1. FAST PATH: O(1) lookup for ASCII / Latin-1
+        if (c < 256) {
+            const matched = self.fast_ascii.testBit(@intCast(c));
+            return if (self.negated) !matched else matched;
+        }
+
+        // 2. SLOW PATH: Fallback for larger Unicode codepoints
         if (self.unicode_property) |prop| {
             const unicode = @import("unicode.zig");
             const unicode_properties = @import("unicode_properties.zig");
@@ -60,6 +113,27 @@ pub const CharClass = struct {
         }
         return if (self.negated) !found else found;
     }
+
+    /// Initialize from ranges - automatically precomputes FastBitSet
+    pub fn init(ranges: []const CharRange, negated: bool) CharClass {
+        var cc = CharClass{
+            .ranges = ranges,
+            .negated = negated,
+        };
+        cc.precompute();
+        return cc;
+    }
+
+    /// Initialize with unicode property - automatically precomputes FastBitSet
+    pub fn initWithProperty(prop: UnicodeProperty, negated: bool) CharClass {
+        var cc = CharClass{
+            .ranges = &[_]CharRange{},
+            .negated = negated,
+            .unicode_property = prop,
+        };
+        cc.precompute();
+        return cc;
+    }
 };
 
 /// Regex compilation flags
@@ -70,6 +144,18 @@ pub const CompileFlags = packed struct {
     extended: bool = false,
     unicode: bool = false,
 };
+
+/// Comptime helper for creating precomputed static CharClasses
+/// This computes the FastBitSet at compile time - zero runtime overhead
+fn createStaticCharClass(ranges: []const CharRange, negated: bool) CharClass {
+    @setEvalBranchQuota(10000);
+    var class = CharClass{
+        .ranges = ranges,
+        .negated = negated,
+    };
+    class.precompute();
+    return class;
+}
 
 /// Span in the source pattern (for error reporting)
 pub const Span = struct {
@@ -88,222 +174,156 @@ pub const Span = struct {
 /// Predefined character classes
 pub const CharClasses = struct {
     /// Digits: [0-9]
-    pub const digit = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('0', '9'),
-        },
-        .negated = false,
-    };
+    pub const digit = createStaticCharClass(&[_]CharRange{
+        CharRange.init('0', '9'),
+    }, false);
 
     /// Non-digits: [^0-9]
-    pub const non_digit = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('0', '9'),
-        },
-        .negated = true,
-    };
+    pub const non_digit = createStaticCharClass(&[_]CharRange{
+        CharRange.init('0', '9'),
+    }, true);
 
     /// Word characters: [a-zA-Z0-9_]
-    pub const word = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('a', 'z'),
-            CharRange.init('A', 'Z'),
-            CharRange.init('0', '9'),
-            CharRange.init('_', '_'),
-        },
-        .negated = false,
-    };
+    pub const word = createStaticCharClass(&[_]CharRange{
+        CharRange.init('a', 'z'),
+        CharRange.init('A', 'Z'),
+        CharRange.init('0', '9'),
+        CharRange.init('_', '_'),
+    }, false);
 
     /// Non-word characters: [^a-zA-Z0-9_]
-    pub const non_word = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('a', 'z'),
-            CharRange.init('A', 'Z'),
-            CharRange.init('0', '9'),
-            CharRange.init('_', '_'),
-        },
-        .negated = true,
-    };
+    pub const non_word = createStaticCharClass(&[_]CharRange{
+        CharRange.init('a', 'z'),
+        CharRange.init('A', 'Z'),
+        CharRange.init('0', '9'),
+        CharRange.init('_', '_'),
+    }, true);
 
     /// Whitespace: [ \t\n\r\f\v]
-    pub const whitespace = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(' ', ' '),
-            CharRange.init('\t', '\t'),
-            CharRange.init('\n', '\n'),
-            CharRange.init('\r', '\r'),
-            CharRange.init(0x0C, 0x0C), // \f
-            CharRange.init(0x0B, 0x0B), // \v
-        },
-        .negated = false,
-    };
+    pub const whitespace = createStaticCharClass(&[_]CharRange{
+        CharRange.init(' ', ' '),
+        CharRange.init('\t', '\t'),
+        CharRange.init('\n', '\n'),
+        CharRange.init('\r', '\r'),
+        CharRange.init(0x0C, 0x0C), // \f
+        CharRange.init(0x0B, 0x0B), // \v
+    }, false);
 
     /// Non-whitespace: [^ \t\n\r\f\v]
-    pub const non_whitespace = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(' ', ' '),
-            CharRange.init('\t', '\t'),
-            CharRange.init('\n', '\n'),
-            CharRange.init('\r', '\r'),
-            CharRange.init(0x0C, 0x0C), // \f
-            CharRange.init(0x0B, 0x0B), // \v
-        },
-        .negated = true,
-    };
+    pub const non_whitespace = createStaticCharClass(&[_]CharRange{
+        CharRange.init(' ', ' '),
+        CharRange.init('\t', '\t'),
+        CharRange.init('\n', '\n'),
+        CharRange.init('\r', '\r'),
+        CharRange.init(0x0C, 0x0C), // \f
+        CharRange.init(0x0B, 0x0B), // \v
+    }, true);
 
     /// Horizontal whitespace: [ \t]
-    pub const horizontal_whitespace = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(' ', ' '),
-            CharRange.init('\t', '\t'),
-        },
-        .negated = false,
-    };
+    pub const horizontal_whitespace = createStaticCharClass(&[_]CharRange{
+        CharRange.init(' ', ' '),
+        CharRange.init('\t', '\t'),
+    }, false);
 
     /// Non-horizontal whitespace: [^ \t]
-    pub const non_horizontal_whitespace = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(' ', ' '),
-            CharRange.init('\t', '\t'),
-        },
-        .negated = true,
-    };
+    pub const non_horizontal_whitespace = createStaticCharClass(&[_]CharRange{
+        CharRange.init(' ', ' '),
+        CharRange.init('\t', '\t'),
+    }, true);
 
     /// Vertical whitespace: [\n\r\f\v]
-    pub const vertical_whitespace = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('\n', '\n'),
-            CharRange.init('\r', '\r'),
-            CharRange.init(0x0C, 0x0C), // \f
-            CharRange.init(0x0B, 0x0B), // \v
-        },
-        .negated = false,
-    };
+    pub const vertical_whitespace = createStaticCharClass(&[_]CharRange{
+        CharRange.init('\n', '\n'),
+        CharRange.init('\r', '\r'),
+        CharRange.init(0x0C, 0x0C), // \f
+        CharRange.init(0x0B, 0x0B), // \v
+    }, false);
 
     /// Non-vertical whitespace: [^\n\r\f\v]
-    pub const non_vertical_whitespace = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('\n', '\n'),
-            CharRange.init('\r', '\r'),
-            CharRange.init(0x0C, 0x0C), // \f
-            CharRange.init(0x0B, 0x0B), // \v
-        },
-        .negated = true,
-    };
+    pub const non_vertical_whitespace = createStaticCharClass(&[_]CharRange{
+        CharRange.init('\n', '\n'),
+        CharRange.init('\r', '\r'),
+        CharRange.init(0x0C, 0x0C), // \f
+        CharRange.init(0x0B, 0x0B), // \v
+    }, true);
 
     // POSIX Character Classes
     // These follow the POSIX standard for character class names
 
     /// POSIX [:alnum:] - Alphanumeric characters [a-zA-Z0-9]
-    pub const posix_alnum = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('a', 'z'),
-            CharRange.init('A', 'Z'),
-            CharRange.init('0', '9'),
-        },
-        .negated = false,
-    };
+    pub const posix_alnum = createStaticCharClass(&[_]CharRange{
+        CharRange.init('a', 'z'),
+        CharRange.init('A', 'Z'),
+        CharRange.init('0', '9'),
+    }, false);
 
     /// POSIX [:alpha:] - Alphabetic characters [a-zA-Z]
-    pub const posix_alpha = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('a', 'z'),
-            CharRange.init('A', 'Z'),
-        },
-        .negated = false,
-    };
+    pub const posix_alpha = createStaticCharClass(&[_]CharRange{
+        CharRange.init('a', 'z'),
+        CharRange.init('A', 'Z'),
+    }, false);
 
     /// POSIX [:blank:] - Space and tab [ \t]
-    pub const posix_blank = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(' ', ' '),
-            CharRange.init('\t', '\t'),
-        },
-        .negated = false,
-    };
+    pub const posix_blank = createStaticCharClass(&[_]CharRange{
+        CharRange.init(' ', ' '),
+        CharRange.init('\t', '\t'),
+    }, false);
 
     /// POSIX [:cntrl:] - Control characters [\x00-\x1F\x7F]
-    pub const posix_cntrl = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(0x00, 0x1F),
-            CharRange.init(0x7F, 0x7F),
-        },
-        .negated = false,
-    };
+    pub const posix_cntrl = createStaticCharClass(&[_]CharRange{
+        CharRange.init(0x00, 0x1F),
+        CharRange.init(0x7F, 0x7F),
+    }, false);
 
     /// POSIX [:digit:] - Digits [0-9]
-    pub const posix_digit = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('0', '9'),
-        },
-        .negated = false,
-    };
+    pub const posix_digit = createStaticCharClass(&[_]CharRange{
+        CharRange.init('0', '9'),
+    }, false);
 
     /// POSIX [:graph:] - Visible characters [\x21-\x7E]
-    pub const posix_graph = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(0x21, 0x7E),
-        },
-        .negated = false,
-    };
+    pub const posix_graph = createStaticCharClass(&[_]CharRange{
+        CharRange.init(0x21, 0x7E),
+    }, false);
 
     /// POSIX [:lower:] - Lowercase letters [a-z]
-    pub const posix_lower = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('a', 'z'),
-        },
-        .negated = false,
-    };
+    pub const posix_lower = createStaticCharClass(&[_]CharRange{
+        CharRange.init('a', 'z'),
+    }, false);
 
     /// POSIX [:print:] - Printable characters [\x20-\x7E]
-    pub const posix_print = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(0x20, 0x7E),
-        },
-        .negated = false,
-    };
+    pub const posix_print = createStaticCharClass(&[_]CharRange{
+        CharRange.init(0x20, 0x7E),
+    }, false);
 
     /// POSIX [:punct:] - Punctuation characters [!-/:-@\[-`{-~]
-    pub const posix_punct = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('!', '/'),
-            CharRange.init(':', '@'),
-            CharRange.init('[', '`'),
-            CharRange.init('{', '~'),
-        },
-        .negated = false,
-    };
+    pub const posix_punct = createStaticCharClass(&[_]CharRange{
+        CharRange.init('!', '/'),
+        CharRange.init(':', '@'),
+        CharRange.init('[', '`'),
+        CharRange.init('{', '~'),
+    }, false);
 
     /// POSIX [:space:] - Whitespace characters [ \t\n\r\f\v]
-    pub const posix_space = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init(' ', ' '),
-            CharRange.init('\t', '\t'),
-            CharRange.init('\n', '\n'),
-            CharRange.init('\r', '\r'),
-            CharRange.init(0x0C, 0x0C), // \f
-            CharRange.init(0x0B, 0x0B), // \v
-        },
-        .negated = false,
-    };
+    pub const posix_space = createStaticCharClass(&[_]CharRange{
+        CharRange.init(' ', ' '),
+        CharRange.init('\t', '\t'),
+        CharRange.init('\n', '\n'),
+        CharRange.init('\r', '\r'),
+        CharRange.init(0x0C, 0x0C), // \f
+        CharRange.init(0x0B, 0x0B), // \v
+    }, false);
 
     /// POSIX [:upper:] - Uppercase letters [A-Z]
-    pub const posix_upper = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('A', 'Z'),
-        },
-        .negated = false,
-    };
+    pub const posix_upper = createStaticCharClass(&[_]CharRange{
+        CharRange.init('A', 'Z'),
+    }, false);
 
     /// POSIX [:xdigit:] - Hexadecimal digits [0-9A-Fa-f]
-    pub const posix_xdigit = CharClass{
-        .ranges = &[_]CharRange{
-            CharRange.init('0', '9'),
-            CharRange.init('A', 'F'),
-            CharRange.init('a', 'f'),
-        },
-        .negated = false,
-    };
+    pub const posix_xdigit = createStaticCharClass(&[_]CharRange{
+        CharRange.init('0', '9'),
+        CharRange.init('A', 'F'),
+        CharRange.init('a', 'f'),
+    }, false);
 };
 
 test "char range contains" {
