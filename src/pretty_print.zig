@@ -179,11 +179,20 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll("ExtendedGrapheme (\\X)\n");
             },
             .recursion => {
-                const target = node.data.recursion;
-                switch (target) {
-                    .whole_pattern => try writer.writeAll("Recursion (whole pattern) (?R)\n"),
-                    .group_number => |n| try writer.print("Recursion (group {d}) (?{d})\n", .{ n, n }),
+                const rec = node.data.recursion;
+                switch (rec.kind) {
+                    .whole_pattern => try writer.writeAll("Recursion (whole pattern) (?R)"),
+                    .group_number => |n| try writer.print("Recursion (group {d}) (?{d})", .{ n, n }),
                 }
+                if (rec.keep_groups) |keeps| {
+                    try writer.writeAll(" keep(");
+                    for (keeps, 0..) |g, i| {
+                        if (i > 0) try writer.writeAll(",");
+                        try writer.print("{d}", .{g});
+                    }
+                    try writer.writeAll(")");
+                }
+                try writer.writeAll("\n");
             },
         }
     }
@@ -204,11 +213,15 @@ pub const PrettyPrinter = struct {
                 try writer.writeAll("(ext-grapheme)");
             },
             .recursion => {
-                const target = node.data.recursion;
-                switch (target) {
-                    .whole_pattern => try writer.writeAll("(recursion whole-pattern)"),
-                    .group_number => |n| try writer.print("(recursion group-{d})", .{n}),
+                const rec = node.data.recursion;
+                switch (rec.kind) {
+                    .whole_pattern => try writer.writeAll("(recursion whole-pattern"),
+                    .group_number => |n| try writer.print("(recursion group-{d}", .{n}),
                 }
+                if (rec.keep_groups) |_| {
+                    try writer.writeAll(" keep-groups");
+                }
+                try writer.writeAll(")");
             },
             .anchor => {
                 const anchor_str = anchorToString(node.data.anchor.type);
@@ -387,11 +400,20 @@ pub const PrettyPrinter = struct {
             .empty => {},
             .extended_grapheme => try writer.writeAll("\\X"),
             .recursion => {
-                const target = node.data.recursion;
-                switch (target) {
-                    .whole_pattern => try writer.writeAll("(?R)"),
-                    .group_number => |n| try writer.print("(?{d})", .{n}),
+                const rec = node.data.recursion;
+                switch (rec.kind) {
+                    .whole_pattern => try writer.writeAll("(?R"),
+                    .group_number => |n| try writer.print("(?{d}", .{n}),
                 }
+                if (rec.keep_groups) |keeps| {
+                    try writer.writeAll("(");
+                    for (keeps, 0..) |g, i| {
+                        if (i > 0) try writer.writeAll(",");
+                        try writer.print("{d}", .{g});
+                    }
+                    try writer.writeAll(")");
+                }
+                try writer.writeAll(")");
             },
             .anchor => {
                 const anchor_str = anchorToString(node.data.anchor.type);

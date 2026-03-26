@@ -1045,8 +1045,9 @@ pub const Parser = struct {
                         } else if (self.current_token.value == 'R' or self.current_token.value == '0') {
                             // Recursive pattern: (?R) or (?0) - recurse entire pattern
                             try self.advance(); // consume R or 0
+                            const keep_groups = try self.parseRecursionKeepList();
                             try self.expect(.rparen);
-                            return ast.Node.createRecursion(self.astAllocator(), .{ .whole_pattern = {} }, span);
+                            return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .whole_pattern, .keep_groups = keep_groups }, span);
                         } else if (self.current_token.value >= '1' and self.current_token.value <= '9') {
                             // Recursive pattern: (?1), (?2), etc. - recurse specific group
                             var num: usize = 0;
@@ -1054,8 +1055,9 @@ pub const Parser = struct {
                                 num = num * 10 + (self.current_token.value - '0');
                                 try self.advance();
                             }
+                            const keep_groups = try self.parseRecursionKeepList();
                             try self.expect(.rparen);
-                            return ast.Node.createRecursion(self.astAllocator(), .{ .group_number = num }, span);
+                            return ast.Node.createRecursion(self.astAllocator(), .{ .kind = .{ .group_number = num }, .keep_groups = keep_groups }, span);
                         } else if (self.current_token.value == 'P') {
                             // Python-style named group (?P<name>...)
                             try self.advance(); // consume P
@@ -1179,6 +1181,60 @@ pub const Parser = struct {
         const name = try self.astAllocator().alloc(u8, name_len);
         @memcpy(name, name_buf[0..name_len]);
         return name;
+    }
+
+    /// Parse the optional grouplist for (?R(n1,n2)) or (?1(n1,n2))
+    /// e.g., (1,2,3) - returns slice of group indices to keep
+    /// Returns null if no grouplist present (current token is NOT lparen)
+    /// If returns non-null, caller should NOT consume the closing paren - it's already consumed
+    fn parseRecursionKeepList(self: *Parser) !?[]const usize {
+        // Check if we have a grouplist - if not, return null without modifying state
+        if (self.current_token.token_type != .lparen) {
+            return null;
+        }
+        // We have '(' - parse the list
+        try self.advance(); // consume '('
+
+        const allocator = self.astAllocator();
+        var group_list = try std.ArrayList(usize).initCapacity(allocator, 4);
+        errdefer group_list.deinit(allocator);
+
+        while (self.current_token.token_type != .eof) {
+            // Check for closing paren
+            if (self.current_token.token_type == .rparen) {
+                try self.advance(); // consume ')'
+                break;
+            }
+
+            // Parse number - must start with digit
+            if (self.current_token.token_type == .literal and
+                self.current_token.value >= '0' and self.current_token.value <= '9')
+            {
+                var num: usize = 0;
+                while (self.current_token.token_type == .literal and
+                    self.current_token.value >= '0' and self.current_token.value <= '9')
+                {
+                    num = num * 10 + (self.current_token.value - '0');
+                    try self.advance();
+                }
+                try group_list.append(allocator, num);
+
+                // Skip comma if present, or check for closing paren
+                if (self.current_token.token_type == .literal and self.current_token.value == ',') {
+                    try self.advance(); // consume ','
+                } else if (self.current_token.token_type != .rparen) {
+                    return RegexError.UnexpectedCharacter;
+                }
+            } else {
+                return RegexError.UnexpectedCharacter;
+            }
+        }
+
+        if (group_list.items.len == 0) {
+            group_list.deinit(allocator);
+            return null;
+        }
+        return try group_list.toOwnedSlice(allocator);
     }
 
     /// Get POSIX character class by name

@@ -241,3 +241,79 @@ test "(?R): complex forward reference to nested group" {
     // (?99) will fail to match since group 99 doesn't exist
     try std.testing.expect(!try regex.isMatch("99xabc"));
 }
+
+// ============================================================================
+// (?R(grouplist)) - PCRE2 10.46+ Selective Capture Retention
+// ============================================================================
+
+test "(?R(grouplist)): keeps group 1 from being wiped on return" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(a|b)(?1(1))c$");
+    defer regex.deinit();
+
+    if (try regex.find("bac")) |match| {
+        defer {
+            var mut_match = match;
+            mut_match.deinit(allocator);
+        }
+        try std.testing.expectEqualStrings("a", match.captures[0]);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}
+
+test "(?R(grouplist)): multiple keeps (?1(2,3))" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^((a|x)(b|y))(?1(2,3))c$");
+    defer regex.deinit();
+
+    if (try regex.find("xyabc")) |match| {
+        defer {
+            var mut_match = match;
+            mut_match.deinit(allocator);
+        }
+        // Outer matches "xy". Group 2="x", Group 3="y".
+        // Inner matches "ab". Group 2="a", Group 3="b".
+        // Both groups kept!
+        try std.testing.expectEqualStrings("a", match.captures[1]);
+        try std.testing.expectEqualStrings("b", match.captures[2]);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}
+
+test "(?R(grouplist)): without keep groups - outer wins" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(a|b)(?1)c$");
+    defer regex.deinit();
+
+    if (try regex.find("bac")) |match| {
+        defer {
+            var mut_match = match;
+            mut_match.deinit(allocator);
+        }
+        // Without keep_groups, outer 'b' should be preserved
+        try std.testing.expectEqualStrings("b", match.captures[0]);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}
+
+test "(?R(grouplist)): whole pattern (?R(1))" {
+    const allocator = std.testing.allocator;
+    // (?R(1)) means recurse entire pattern, keep group 1
+    var regex = try Regex.compile(allocator, "(\\((?:[^()]|(?R(1)))*\\))");
+    defer regex.deinit();
+
+    // Nested parens should work
+    try std.testing.expect(try regex.isMatch("((()))"));
+}
+
+test "(?R(grouplist)): empty grouplist is treated as no keep groups" {
+    const allocator = std.testing.allocator;
+    // (?R()) with empty grouplist - treated as (?R) without keep_groups
+    var regex = try Regex.compile(allocator, "^(a(?1())?b)$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("aabb"));
+}

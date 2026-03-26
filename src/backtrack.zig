@@ -136,14 +136,14 @@ pub const BacktrackEngine = struct {
     }
 
     /// Match a recursive pattern (?R), (?0), (?1), etc.
-    fn matchRecursion(self: *BacktrackEngine, target: ast.Node.RecursionTarget, pos: usize) ?usize {
+    fn matchRecursion(self: *BacktrackEngine, recursion: ast.Node.RecursionTarget, pos: usize) ?usize {
         // Depth limit check
         if (self.recursion_depth >= self.max_recursion_depth) {
             return null;
         }
 
         // Resolve target node
-        const target_node = switch (target) {
+        const target_node = switch (recursion.kind) {
             .whole_pattern => self.ast_root,
             .group_number => |num| blk: {
                 if (num == 0 or num >= self.group_lookup.len) break :blk null;
@@ -162,7 +162,22 @@ pub const BacktrackEngine = struct {
         // Recurse into target
         const result_pos = self.matchNode(target_node.?, pos);
 
-        // Restore captures (outer wins)
+        // PCRE2 10.46+: Selective capture retention via Stack Patching
+        // If match succeeded, patch the saved outer state inside the state_stack
+        // before we pop it, ensuring specified groups retain their inner values.
+        if (result_pos != null) {
+            if (recursion.keep_groups) |keeps| {
+                for (keeps) |g| {
+                    if (g > 0 and g <= self.captures.len) {
+                        const idx = g - 1;
+                        // Write inner capture directly into the saved outer state
+                        self.state_stack.items[stack_base + idx] = self.captures[idx];
+                    }
+                }
+            }
+        }
+
+        // Restore captures (outer wins, applying any patched retains)
         self.popState(stack_base);
 
         return result_pos;

@@ -156,17 +156,20 @@ pub const Node = struct {
     };
 
     /// Recursion target for (?R), (?0), (?1), etc.
-    pub const RecursionTarget = union(enum) {
-        whole_pattern, // (?R) or (?0) - recurse entire pattern
-        group_number: usize, // (?1), (?2), etc. - recurse specific group
-        // Future: group_name: []const u8, // (?&name) - recurse named group
+    pub const RecursionTarget = struct {
+        kind: union(enum) {
+            whole_pattern, // (?R) or (?0) - recurse entire pattern
+            group_number: usize, // (?1), (?2), etc. - recurse specific group
+            // Future: group_name: []const u8, // (?&name) - recurse named group
+        },
+        keep_groups: ?[]const usize = null,
     };
 
-    pub fn createLiteral(allocator: std.mem.Allocator, c: common.Char, ignore_case: bool, span: common.Span) !*Node {
+    pub fn createRecursion(allocator: std.mem.Allocator, recursion: RecursionTarget, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
-            .node_type = .literal,
-            .data = .{ .literal = .{ .c = c, .ignore_case = ignore_case } },
+            .node_type = .recursion,
+            .data = .{ .recursion = recursion },
             .span = span,
         };
         return node;
@@ -188,17 +191,6 @@ pub const Node = struct {
         node.* = .{
             .node_type = .extended_grapheme,
             .data = .{ .extended_grapheme = {} },
-            .span = span,
-        };
-        return node;
-    }
-
-    /// Create a recursion node (?R), (?0), (?1), etc.
-    pub fn createRecursion(allocator: std.mem.Allocator, target: RecursionTarget, span: common.Span) !*Node {
-        const node = try allocator.create(Node);
-        node.* = .{
-            .node_type = .recursion,
-            .data = .{ .recursion = target },
             .span = span,
         };
         return node;
@@ -358,6 +350,17 @@ pub const Node = struct {
         node.* = .{
             .node_type = .backref,
             .data = .{ .backref = .{ .index = index, .name = name } },
+            .span = span,
+        };
+        return node;
+    }
+
+    /// Create a literal character node
+    pub fn createLiteral(allocator: std.mem.Allocator, c: common.Char, ignore_case: bool, span: common.Span) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{
+            .node_type = .literal,
+            .data = .{ .literal = .{ .c = c, .ignore_case = ignore_case } },
             .span = span,
         };
         return node;
