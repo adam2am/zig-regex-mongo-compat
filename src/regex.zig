@@ -255,21 +255,24 @@ pub const Regex = struct {
                 const nfa_mut = @constCast(&self.nfa);
                 var virtual_machine = vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
 
-                // DISABLED: Literal prefix optimization breaks inline modifiers
-                // TODO: Make optimizer aware of per-node flags before re-enabling
-                // if (self.opt_info.literal_prefix) |prefix| {
-                //     if (!self.flags.case_insensitive) {
-                //         var search_from: usize = 0;
-                //         while (std.mem.indexOf(u8, input[search_from..], prefix)) |rel_pos| {
-                //             const prefix_pos = search_from + rel_pos;
-                //             if (try virtual_machine.matchAt(input, prefix_pos)) |result| {
-                //                 return try self.buildMatch(input, result);
-                //             }
-                //             search_from = prefix_pos + 1;
-                //         }
-                //         return null;
-                //     }
-                // }
+                // Only use if strictly case-sensitive to respect inline modifier boundaries safely.
+                if (!self.flags.case_insensitive) {
+                    if (self.opt_info.literal_prefix) |prefix| {
+                        // Convert u21 prefix to u8 for SIMD scanning (only if ASCII safe)
+                        if (prefix.len > 0 and prefix[0] < 128) {
+                            const first_byte: u8 = @intCast(prefix[0]);
+                            var search_from: usize = 0;
+                            while (std.mem.indexOfScalar(u8, input[search_from..], first_byte)) |rel_pos| {
+                                const prefix_pos = search_from + rel_pos;
+                                if (try virtual_machine.matchAt(input, prefix_pos)) |result| {
+                                    return try self.buildMatch(input, result);
+                                }
+                                search_from = prefix_pos + 1; // Advance past failure
+                            }
+                            return null; // Hardware verified the character doesn't exist. Fail fast.
+                        }
+                    }
+                }
 
                 if (try virtual_machine.find(input)) |result| {
                     return try self.buildMatch(input, result);

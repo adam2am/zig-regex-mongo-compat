@@ -110,12 +110,11 @@ pub const Optimizer = struct {
                 return true;
             },
             // Any of these stop prefix collection
-            .alternation, .star, .plus, .optional, .repeat, .any, .char_class, .backref, .extended_grapheme, .recursion => false,
+            .alternation, .star, .plus, .optional, .repeat, .any, .char_class, .backref, .extended_grapheme, .recursion, .empty => false,
             // Lookahead/lookbehind don't consume input, atomic groups do
             .lookahead, .lookbehind => true,
             .atomic_group => try self.collectLiteralPrefix(node.data.atomic_group.child, prefix),
             .conditional => false, // Cannot guarantee prefix for conditional nodes
-            .empty => true,
         };
     }
 
