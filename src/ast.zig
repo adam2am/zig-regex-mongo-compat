@@ -153,6 +153,10 @@ pub const Node = struct {
     pub const Backreference = struct {
         index: usize, // 1-based capture group index
         name: ?[]const u8 = null, // optional name for named backreferences
+        /// True only for \g{+n} forward relative references.
+        /// PCRE2 behavior: forward-unmatched group → matches empty string.
+        /// All other unmatched backrefs (\1, \k<name>, etc.) → fail the match.
+        is_forward_ref: bool = false,
     };
 
     /// Recursion target for (?R), (?0), (?1), etc.
@@ -351,11 +355,11 @@ pub const Node = struct {
         return node;
     }
 
-    pub fn createBackreference(allocator: std.mem.Allocator, index: usize, name: ?[]const u8, span: common.Span) !*Node {
+    pub fn createBackreference(allocator: std.mem.Allocator, index: usize, name: ?[]const u8, is_forward_ref: bool, span: common.Span) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .node_type = .backref,
-            .data = .{ .backref = .{ .index = index, .name = name } },
+            .data = .{ .backref = .{ .index = index, .name = name, .is_forward_ref = is_forward_ref } },
             .span = span,
         };
         return node;

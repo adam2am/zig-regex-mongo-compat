@@ -296,3 +296,13 @@ test "pattern backreference: quoted strings" {
     try std.testing.expect(try regex.isMatch("\"hello\""));
     try std.testing.expect(!try regex.isMatch("'hello\""));
 }
+
+test "pattern backreference: unmatched reference returns null" {
+    const allocator = std.testing.allocator;
+    // Group 1 is optional and may not participate. If it doesn't, \1 fails the match (no POSIX group).
+    var regex = try Regex.compile(allocator, "^(a)?b\\1c$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("abac")); // Group 1 matched 'a', \1 requires 'a'
+    try std.testing.expect(!try regex.isMatch("bc")); // Group 1 unmatched, \1 fails — no empty-match compat
+}

@@ -417,7 +417,6 @@ test "(?R(grouplist)): +0 at top level resolves to whole pattern (group 0)" {
     try std.testing.expect(try regex.isMatch("abcad"));
 }
 
-
 // ============================================================================
 // (?&name) and (?P>name) - Named Subroutine Calls
 // ============================================================================
@@ -455,4 +454,82 @@ test "(?+1): relative forward call" {
     defer regex.deinit();
 
     try std.testing.expect(try regex.isMatch("aab"));
+}
+
+// ============================================================================
+// Future PCRE2 Features (Currently Unsupported)
+// ============================================================================
+
+test "Debug \\g{+1}" {
+    const allocator = std.testing.allocator;
+    // Pattern: (a)\g{+1}(b)  => group 1 is (a), group 2 is (b)
+    // \g{+1} refers to group 2, which is undefined at this point, so matches empty string.
+    var regex = try Regex.compile(allocator, "(a)\\g{+1}(b)");
+    defer regex.deinit();
+
+    // Check if it matches "ab" inside "aba"
+    const result = try regex.isMatch("aba");
+    try std.testing.expect(result);
+}
+
+test "Debug \\g{word}" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?<word>test)\\g{word}");
+    defer regex.deinit();
+
+    const result = try regex.isMatch("testtest");
+    try std.testing.expect(result);
+}
+
+test "(?R)*: cycle detection prevents infinite empty loop" {
+    const allocator = std.testing.allocator;
+    // Pattern: (?R)*
+    // The recursion body consumes zero input, then star applies to it — infinite loop without cycle detection.
+    // The cycle detector should catch it and force a backtrack/failure without crashing the stack.
+    var regex = try Regex.compile(allocator, "^(?R)*$");
+    defer regex.deinit();
+
+    // Should safely match empty string (star matches zero times, recursion branch killed by cycle detector)
+    try std.testing.expect(try regex.isMatch(""));
+}
+
+// ============================================================================
+// (?&name(<name>)) - Named Subroutine Call with Keep Group
+// ============================================================================
+
+test "(?&name(<name>)): named subroutine keep group, inner capture used by backref" {
+    const allocator = std.testing.allocator;
+    // Pattern: ^(?<char>a|x)(?&char(<char>))\k<char>$
+    //
+    // On input "xax":
+    //   (?<char>a|x) matches 'x', char="x"
+    //   (?&char(<char>)) recurses into 'char' group, matches 'a', keeps inner char="a"
+    //   \k<char> now refers to inner "a", remaining input is "x" -- wait, that would not match
+    //
+    // Actually PCRE2 semantics: keep_groups patches the outer state so char="a"
+    // But the last char is 'x' not 'a', so the pattern should NOT match if inner wins.
+    //
+    // Let's use the correct PCRE2 semantics test: inner value is kept,
+    // so \k<char>="a" must match the last char. Input must be "xaa" for a match.
+    // For input "xax": outer x -> inner a -> backref must be "a", last char is "x" -> NO match.
+    // For input "xaa": outer x -> inner a -> backref "a" matches last 'a' -> YES match.
+    var regex = try Regex.compile(allocator, "^(?<char>a|x)(?&char(<char>))\\k<char>$");
+    defer regex.deinit();
+
+    // With keep group: inner 'a' is retained as char. Last char must be 'a'.
+    try std.testing.expect(try regex.isMatch("xaa")); // outer=x, inner=a, backref=a ✓
+    try std.testing.expect(!try regex.isMatch("xax")); // outer=x, inner=a, backref=a, last='x' ✗
+    try std.testing.expect(!try regex.isMatch("xbb")); // 'b' not in set ✗
+}
+
+test "(?&name): named subroutine without keep - outer wins" {
+    const allocator = std.testing.allocator;
+    // Without keep group, outer char="x" is preserved
+    // Pattern: ^(?<char>a|x)(?&char)\k<char>$
+    // On input "xax": outer=x, inner=a discarded, backref=x, last='x' -> match!
+    var regex = try Regex.compile(allocator, "^(?<char>a|x)(?&char)\\k<char>$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("xax")); // outer="x" retained, last='x' ✓
+    try std.testing.expect(!try regex.isMatch("xaa")); // backref="x", last='a' ✗
 }

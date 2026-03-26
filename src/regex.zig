@@ -103,7 +103,7 @@ pub const Regex = struct {
             try pattern_analyzer.analyzeAndValidate(allocator, tree.root, .high);
 
             // Use backtracking engine
-            var backtrack_engine = try backtrack.BacktrackEngine.init(allocator, tree.root, tree.capture_count, final_flags, &named_captures);
+            var backtrack_engine = try backtrack.BacktrackEngine.init(allocator, tree.root, tree.capture_count, final_flags, named_captures);
             errdefer backtrack_engine.deinit();
 
             // Create a dummy NFA (not used)

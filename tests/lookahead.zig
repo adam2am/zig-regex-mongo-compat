@@ -157,3 +157,20 @@ test "lookahead with capture groups" {
         return error.TestExpectedMatch;
     }
 }
+
+test "positive lookahead: captures persist after success" {
+    const allocator = std.testing.allocator;
+    // In PCRE2 semantics, captures made inside a successful positive lookahead persist.
+    var regex = try Regex.compile(allocator, "^(?=(a))a$");
+    defer regex.deinit();
+
+    if (try regex.find("a")) |match| {
+        var mut_match = match;
+        defer mut_match.deinit(allocator);
+        try std.testing.expectEqualStrings("a", match.slice);
+        try std.testing.expectEqual(@as(usize, 1), match.captures.len);
+        try std.testing.expectEqualStrings("a", match.captures[0]);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}

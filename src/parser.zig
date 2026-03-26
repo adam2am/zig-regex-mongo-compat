@@ -42,9 +42,12 @@ pub const TokenType = enum {
     escape_Z,
     escape_p,
     escape_P,
+    escape_g,
+    escape_k,
     backref,
     pcre_ucp,
     pcre_utf,
+    pcre_ignore,
     eof,
 };
 
@@ -152,6 +155,8 @@ pub const Lexer = struct {
                 // Parser will handle the {Name} part
                 return self.makeToken(if (c == 'P') .escape_P else .escape_p, 0);
             },
+            'g' => return self.makeToken(.escape_g, 0),
+            'k' => return self.makeToken(.escape_k, 0),
             'Q' => {
                 // Start literal sequence - treat everything as literal until \E
                 self.literal_mode = true;
@@ -267,9 +272,29 @@ pub const Lexer = struct {
             self.flags.unicode = true;
             _ = self.advance(); // consume )
             return self.makeToken(.pcre_utf, 0);
+        } else if (std.mem.eql(u8, verb, "BSR_UNICODE") or std.mem.eql(u8, verb, "BSR_ANYCRLF")) {
+            // Accept and ignore (we support \R universally)
+            _ = self.advance(); // consume )
+            return self.makeToken(.pcre_ignore, 0);
         } else {
             return RegexError.PCREVerbsNotSupported;
         }
+    }
+
+    /// Extract raw content from `start_pos` up to (but not including) `stop_char`.
+    /// Advances the lexer position past the stop character.
+    /// Use this when the parser needs bracketed content (e.g. `\p{Latin}`, `\g{name}`)
+    /// but the lexer's own position isn't at the opening brace.
+    /// Returns the slice between start_pos and stop_char, or error if stop_char not found.
+    pub fn extractRawUntilFrom(self: *Lexer, start_pos: usize, stop_char: u8) ![]const u8 {
+        var end_pos = start_pos;
+        while (end_pos < self.input.len and self.input[end_pos] != stop_char) {
+            end_pos += 1;
+        }
+        if (end_pos >= self.input.len) return RegexError.UnexpectedCharacter;
+        const result = self.input[start_pos..end_pos];
+        self.pos = end_pos + 1; // Fast-forward past stop_char
+        return result;
     }
 };
 
@@ -803,18 +828,10 @@ pub const Parser = struct {
                     return RegexError.InvalidUnicodeProperty;
                 }
 
-                // Find closing brace
-                var end_pos = current_pos + 1;
-                while (end_pos < self.lexer.input.len and self.lexer.input[end_pos] != '}') {
-                    end_pos += 1;
-                }
-
-                if (end_pos >= self.lexer.input.len) {
+                // Lexer owns the raw input scanning and position advancement
+                const prop_name = self.lexer.extractRawUntilFrom(current_pos + 1, '}') catch {
                     return RegexError.InvalidUnicodeProperty;
-                }
-
-                const prop_name = self.lexer.input[current_pos + 1 .. end_pos];
-                self.lexer.pos = end_pos + 1; // Move lexer past '}'
+                };
 
                 // Now advance to consume the escape_p token
                 try self.advance();
@@ -856,7 +873,7 @@ pub const Parser = struct {
             .backref => {
                 try self.advance();
                 const index = token.value; // 1-based capture group index
-                return ast.Node.createBackreference(self.astAllocator(), index, null, span);
+                return ast.Node.createBackreference(self.astAllocator(), index, null, false, span);
             },
             .pcre_ucp, .pcre_utf => {
                 try self.advance();
@@ -865,6 +882,100 @@ pub const Parser = struct {
                 current_flags.unicode = true;
                 // Return empty node (these verbs don't produce AST nodes)
                 return ast.Node.createEmpty(self.astAllocator(), span);
+            },
+            .pcre_ignore => {
+                try self.advance();
+                return ast.Node.createEmpty(self.astAllocator(), span);
+            },
+            .escape_g => {
+                // \g{name}, \g{1}, \g{-1}, \g{+1}, \g1 backreferences
+                try self.advance(); // consume \g token
+
+                if (self.current_token.token_type != .lbrace) {
+                    // Support \g1 (without braces) - single digit only
+                    if (self.current_token.token_type == .literal and self.current_token.value >= '1' and self.current_token.value <= '9') {
+                        const num: usize = self.current_token.value - '0';
+                        try self.advance();
+                        return ast.Node.createBackreference(self.astAllocator(), num, null, false, span);
+                    }
+                    return RegexError.UnexpectedCharacter;
+                }
+
+                try self.advance(); // consume {
+
+                var is_negative = false;
+                var is_relative_positive = false;
+
+                if (self.current_token.token_type == .literal and self.current_token.value == '-') {
+                    is_negative = true;
+                    try self.advance();
+                } else if (self.current_token.token_type == .plus) {
+                    is_relative_positive = true;
+                    try self.advance();
+                }
+
+                if (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                    var num: usize = 0;
+                    while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                        if (num > std.math.maxInt(usize) / 10) return RegexError.UnexpectedCharacter;
+                        num = num * 10 + (self.current_token.value - '0');
+                        try self.advance();
+                    }
+                    try self.expect(.rbrace);
+
+                    if (is_negative) {
+                        if (num > self.capture_count) return RegexError.UnexpectedCharacter;
+                        const resolved = self.capture_count + 1 - num;
+                        return ast.Node.createBackreference(self.astAllocator(), resolved, null, false, span);
+                    } else if (is_relative_positive) {
+                        const resolved = self.capture_count + num;
+                        // Forward relative ref: group not yet matched → empty-match semantics
+                        return ast.Node.createBackreference(self.astAllocator(), resolved, null, true, span);
+                    } else {
+                        return ast.Node.createBackreference(self.astAllocator(), num, null, false, span);
+                    }
+                } else {
+                    // Named backreference \g{name} - extract content between braces.
+                    // Lexer owns the raw input scanning and position advancement.
+                    const name = try self.lexer.extractRawUntilFrom(self.current_token.span.start, '}');
+                    try self.advance(); // sync current_token
+                    try self.advance(); // sync current_token
+                    return ast.Node.createBackreference(self.astAllocator(), 0, name, false, span);
+                }
+            },
+            .escape_k => {
+                // \k<name>  (Perl), \k'name' (Perl), \k{name} (.NET)
+                // All are named backreferences per PCRE2 spec - produces same node as \g{name}
+                try self.advance(); // consume \k token
+
+                // Determine delimiter style
+                const open_delim: u8 = switch (self.current_token.token_type) {
+                    .literal => self.current_token.value,
+                    .lbrace => '{',
+                    else => return RegexError.InvalidGroupName,
+                };
+                const close_delim: u8 = switch (open_delim) {
+                    '<' => '>',
+                    '\'' => '\'',
+                    '{' => '}',
+                    else => return RegexError.InvalidGroupName,
+                };
+
+                try self.advance(); // consume < or ' or {
+
+                // Read name characters until close delimiter
+                const name = try self.parseNameUntil(&[_]u8{close_delim});
+
+                // Consume closing delimiter
+                if (self.current_token.token_type == .literal and self.current_token.value == close_delim) {
+                    try self.advance();
+                } else if (self.current_token.token_type == .rbrace and close_delim == '}') {
+                    try self.advance();
+                } else {
+                    return RegexError.InvalidGroupName;
+                }
+
+                return ast.Node.createBackreference(self.astAllocator(), 0, name, false, span);
             },
             .lparen => {
                 // SECURITY: Check nesting depth to prevent stack overflow
@@ -1058,6 +1169,7 @@ pub const Parser = struct {
                             try self.advance(); // consume + or -
                             var num: usize = 0;
                             while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                                if (num > std.math.maxInt(usize) / 10) return RegexError.UnexpectedCharacter;
                                 num = num * 10 + (self.current_token.value - '0');
                                 try self.advance();
                             }
@@ -1272,6 +1384,7 @@ pub const Parser = struct {
                 try self.advance(); // consume +
                 var num: usize = 0;
                 while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                    if (num > std.math.maxInt(usize) / 10) return RegexError.UnexpectedCharacter;
                     num = num * 10 + (self.current_token.value - '0');
                     try self.advance();
                 }
@@ -1291,6 +1404,7 @@ pub const Parser = struct {
                 try self.advance(); // consume -
                 var num: usize = 0;
                 while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                    if (num > std.math.maxInt(usize) / 10) return RegexError.UnexpectedCharacter;
                     num = num * 10 + (self.current_token.value - '0');
                     try self.advance();
                 }
@@ -1302,6 +1416,7 @@ pub const Parser = struct {
                         0;
                     try group_list.append(allocator, .{ .index = resolved });
                 } else {
+                    if (num > self.capture_count + 1) return RegexError.UnexpectedCharacter;
                     const resolved = self.capture_count + 1 - num;
                     try group_list.append(allocator, .{ .index = resolved });
                 }
@@ -1310,6 +1425,7 @@ pub const Parser = struct {
             else if (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
                 var num: usize = 0;
                 while (self.current_token.token_type == .literal and self.current_token.value >= '0' and self.current_token.value <= '9') {
+                    if (num > std.math.maxInt(usize) / 10) return RegexError.UnexpectedCharacter;
                     num = num * 10 + (self.current_token.value - '0');
                     try self.advance();
                 }
@@ -1583,6 +1699,7 @@ test "parser simple literal" {
     defer arena.deinit();
     const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "abc", .{});
+    defer parser.deinit();
     var result = try parser.parse();
     defer result.deinit();
 
@@ -1594,6 +1711,7 @@ test "parser alternation" {
     defer arena.deinit();
     const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "a|b", .{});
+    defer parser.deinit();
     var result = try parser.parse();
     defer result.deinit();
 
@@ -1605,6 +1723,7 @@ test "parser star" {
     defer arena.deinit();
     const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "a*", .{});
+    defer parser.deinit();
     var result = try parser.parse();
     defer result.deinit();
 
@@ -1616,6 +1735,7 @@ test "parser group" {
     defer arena.deinit();
     const allocator = arena.allocator();
     var parser = try Parser.init(allocator, "(ab)", .{});
+    defer parser.deinit();
     var result = try parser.parse();
     defer result.deinit();
 
@@ -1624,14 +1744,15 @@ test "parser group" {
 }
 
 // Temporarily disabled - POSIX parsing needs redesign
-// test "POSIX character class parsing" {
-//     const allocator = std.testing.allocator;
-//     var parser = try Parser.init(allocator, "[[:alpha:]]");
-//     var tree = try parser.parse();
-//     defer tree.deinit();
-//
-//     try std.testing.expectEqual(ast.NodeType.char_class, tree.root.node_type);
-// }
+test "POSIX character class parsing" {
+    const allocator = std.testing.allocator;
+    var parser = try Parser.init(allocator, "[[:alpha:]]", .{});
+    defer parser.deinit();
+    var tree = try parser.parse();
+    defer tree.deinit();
+
+    try std.testing.expectEqual(ast.NodeType.char_class, tree.root.node_type);
+}
 
 test "parser: nesting depth limit" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1660,6 +1781,7 @@ test "parser: nesting depth limit" {
 
     const pattern = pattern_buf[0..pos];
     var parser = try Parser.init(allocator, pattern, .{});
+    defer parser.deinit();
     const result = parser.parse();
 
     try std.testing.expectError(RegexError.NestingTooDeep, result);
@@ -1692,6 +1814,7 @@ test "parser: acceptable nesting depth" {
 
     const pattern = pattern_buf[0..pos];
     var parser = try Parser.init(allocator, pattern, .{});
+    defer parser.deinit();
     var result = try parser.parse();
     defer result.deinit();
 

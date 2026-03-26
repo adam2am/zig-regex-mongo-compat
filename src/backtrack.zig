@@ -48,13 +48,22 @@ pub const BacktrackEngine = struct {
     max_steps: usize,
     /// Hard-abort flag to short-circuit ReDoS loops across all finding attempts
     aborted: bool,
-    /// Reference to named capture table mapping names to indices
-    named_captures: *const std.StringHashMap(usize),
+    /// Named capture table mapping names to indices.
+    /// Stored by value so the engine never points at a moved stack-local map.
+    named_captures: std.StringHashMap(usize),
+
+    /// Cycle detection stack for recursion (prevents infinite empty loops natively)
+    recursion_call_stack: std.ArrayList(RecursionFrame),
 
     pub const CaptureGroup = struct {
         start: usize,
         end: usize,
         matched: bool,
+    };
+
+    pub const RecursionFrame = struct {
+        node: *ast.Node,
+        pos: usize,
     };
 
     /// Default maximum steps: 10 million (prevents ReDoS while allowing complex patterns)
@@ -63,7 +72,15 @@ pub const BacktrackEngine = struct {
     /// Default maximum recursion depth (prevents stack overflow on deeply recursive patterns)
     pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 500;
 
-    pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags, named_captures: *const std.StringHashMap(usize)) !BacktrackEngine {
+    /// A candidate match position with its capture state snapshot.
+    /// stack_base is an index into state_stack: peekState(stack_base) instantly
+    /// restores captures to the exact moment this position was found — no re-running.
+    pub const MatchState = struct {
+        end_pos: usize,
+        stack_base: usize,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags, named_captures: std.StringHashMap(usize)) !BacktrackEngine {
         const captures = try allocator.alloc(CaptureGroup, capture_count);
         for (captures) |*cap| {
             cap.* = .{ .start = 0, .end = 0, .matched = false };
@@ -89,6 +106,7 @@ pub const BacktrackEngine = struct {
             .max_steps = DEFAULT_MAX_STEPS,
             .aborted = false,
             .named_captures = named_captures,
+            .recursion_call_stack = std.ArrayList(RecursionFrame).initCapacity(allocator, DEFAULT_MAX_RECURSION_DEPTH) catch unreachable,
         };
 
         // Build O(1) lookup table
@@ -101,6 +119,7 @@ pub const BacktrackEngine = struct {
         self.allocator.free(self.captures);
         self.allocator.free(self.group_lookup);
         self.state_stack.deinit(self.allocator);
+        self.recursion_call_stack.deinit(self.allocator);
     }
 
     /// Build O(1) lookup table for group index -> AST node
@@ -162,11 +181,24 @@ pub const BacktrackEngine = struct {
 
         if (target_node == null) return null;
 
+        // Cycle Detection: If we are already evaluating this exact node at this exact position,
+        // we have hit an infinite loop (empty recursion). Fail this branch to force backtracking.
+        for (self.recursion_call_stack.items) |frame| {
+            if (frame.node == target_node.? and frame.pos == pos) {
+                return null;
+            }
+        }
+
         // Save state for PCRE2 "outer wins" semantics
         const stack_base = self.pushState() catch return null;
 
         self.recursion_depth += 1;
-        defer self.recursion_depth -= 1;
+        self.recursion_call_stack.append(self.allocator, .{ .node = target_node.?, .pos = pos }) catch return null;
+
+        defer {
+            self.recursion_depth -= 1;
+            _ = self.recursion_call_stack.pop();
+        }
 
         // Recurse into target
         const result_pos = self.matchNode(target_node.?, pos);
@@ -390,41 +422,44 @@ pub const BacktrackEngine = struct {
 
     fn matchConcat(self: *BacktrackEngine, concat: ast.Node.Concat, pos: usize) ?usize {
         const left_has_quantifiers = self.hasQuantifiers(concat.left);
-        const right_has_quantifiers = self.hasQuantifiers(concat.right);
 
         if (left_has_quantifiers) {
-            // For quantifiers, collect all possible matches and try them in order
-            // Lazy quantifiers will be tried minimal-first, greedy maximal-first
-            var left_positions = std.ArrayList(usize).initCapacity(self.allocator, 0) catch return null;
-            defer left_positions.deinit(self.allocator);
+            // Phase 1: collect all possible left-side end positions.
+            // Each MatchState carries a stack_base indexing the exact capture snapshot for that position.
+            // collectAllMatches calls pushState() for each position found, growing the state_stack.
+            var left_matches = std.ArrayList(MatchState).initCapacity(self.allocator, 0) catch return null;
+            defer left_matches.deinit(self.allocator);
 
-            self.collectAllMatches(concat.left, pos, &left_positions) catch return null;
+            // base_state anchors the stack before collection. dropState(base_state) on success
+            // or popState(base_state) on total failure cleans up all phase-1 snapshots at once.
+            const base_state = self.pushState() catch return null;
+            self.collectAllMatches(concat.left, pos, &left_matches) catch {
+                self.popState(base_state);
+                return null;
+            };
 
-            for (left_positions.items) |left_end| {
-                // Zero-allocation state save using the centralized stack
-                const stack_base = self.pushState() catch continue;
-
-                if (self.matchNode(concat.right, left_end)) |result| {
-                    // SUCCESS: Keep captures from right side, but clean up stack
-                    self.dropState(stack_base);
+            // Phase 2: for each candidate, peekState() restores its captures WITHOUT touching the stack.
+            // Then try the right side. peekState is O(capture_count) memcpy — no re-running.
+            for (left_matches.items) |left_match| {
+                self.peekState(left_match.stack_base);
+                if (self.matchNode(concat.right, left_match.end_pos)) |result| {
+                    self.dropState(base_state); // SUCCESS: keep right-side captures, clean up phase-1 stack
                     return result;
                 }
-
-                // FAILURE: Pop state to restore pre-concat captures
-                self.popState(stack_base);
+                // FAILURE: right side failed, try next candidate (peekState will restore for next iter)
             }
-            return null;
-        } else if (right_has_quantifiers) {
-            // Right side has quantifiers: match left once, let right handle its own backtracking
-            if (self.matchNode(concat.left, pos)) |left_end| {
-                return self.matchNode(concat.right, left_end);
-            }
+            self.popState(base_state); // TOTAL FAILURE: restore pre-concat state
             return null;
         } else {
-            // For simple patterns without quantifiers, just try once
+            // No quantifiers on left: simple push/pop around left+right match.
+            const stack_base = self.pushState() catch return null;
             if (self.matchNode(concat.left, pos)) |left_end| {
-                return self.matchNode(concat.right, left_end);
+                if (self.matchNode(concat.right, left_end)) |result| {
+                    self.dropState(stack_base); // SUCCESS: keep captures from both sides
+                    return result;
+                }
             }
+            self.popState(stack_base); // FAILURE: restore pre-concat state
             return null;
         }
     }
@@ -448,45 +483,39 @@ pub const BacktrackEngine = struct {
         };
     }
 
-    /// Collect all possible ending positions for matching a node at a given position
-    /// For lazy quantifiers, this returns positions in order: minimal first
-    /// For greedy quantifiers, this returns positions in order: maximal first
-    fn collectAllMatches(self: *BacktrackEngine, node: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
+    /// Collect all possible ending positions for matching a node at a given position.
+    /// Each MatchState records end_pos AND stack_base (index into state_stack after pushState at that point).
+    /// Callers use peekState(state.stack_base) to restore captures for any candidate — no re-running.
+    /// Lazy quantifiers: positions ordered minimal-first. Greedy: maximal-first.
+    fn collectAllMatches(self: *BacktrackEngine, node: *ast.Node, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         switch (node.node_type) {
             .star => {
                 const quant = node.data.star;
-
-                // Possessive quantifiers: collect only maximal match
                 if (quant.mode == .possessive) {
                     return try self.collectPossessiveStarMatches(quant.child, pos, positions);
                 }
-
                 if (quant.mode == .greedy) {
-                    // Greedy: try maximal first, then backtrack
                     try self.collectGreedyStarMatches(quant.child, pos, positions);
                 } else {
-                    // Lazy: try minimal first, then more
                     try self.collectLazyStarMatches(quant.child, pos, positions);
                 }
             },
             .plus => {
                 const quant = node.data.plus;
-
-                // Possessive quantifiers: collect only maximal match
                 if (quant.mode == .possessive) {
                     return try self.collectPossessivePlusMatches(quant.child, pos, positions);
                 }
-
-                // Must match at least once
-                const first_match = self.matchNode(quant.child, pos) orelse return;
-
+                // Must match at least once — snapshot state for the first match
+                const first_base = try self.pushState();
+                const first_match = self.matchNode(quant.child, pos) orelse {
+                    self.popState(first_base);
+                    return;
+                };
                 if (quant.mode == .greedy) {
-                    // Greedy: try maximal first
                     try self.collectGreedyStarMatches(quant.child, first_match, positions);
                 } else {
-                    // Lazy: try minimal (one match) first, then more
-                    try positions.append(self.allocator, first_match);
-                    // If lazy backtrack is disabled (find() mode), only return minimal match
+                    // Lazy: minimal (one match) first
+                    try positions.append(self.allocator, .{ .end_pos = first_match, .stack_base = try self.pushState() });
                     if (!self.disable_lazy_backtrack) {
                         try self.collectLazyStarMatches(quant.child, first_match, positions);
                     }
@@ -494,37 +523,33 @@ pub const BacktrackEngine = struct {
             },
             .optional => {
                 const quant = node.data.optional;
-
-                // Possessive quantifiers: collect only maximal match
                 if (quant.mode == .possessive) {
                     return try self.collectPossessiveOptionalMatches(quant.child, pos, positions);
                 }
-
                 if (quant.mode == .greedy) {
-                    // Greedy: try matching first, then zero
+                    // Greedy: try matching first, snapshot after each outcome, then zero
                     if (self.matchNode(quant.child, pos)) |end| {
-                        try positions.append(self.allocator, end);
+                        try positions.append(self.allocator, .{ .end_pos = end, .stack_base = try self.pushState() });
                     }
-                    try positions.append(self.allocator, pos); // zero matches
+                    // Restore to pre-optional state for the zero-match option
+                    const zero_base = try self.pushState();
+                    try positions.append(self.allocator, .{ .end_pos = pos, .stack_base = zero_base });
                 } else {
-                    // Lazy: try zero first, then matching
-                    try positions.append(self.allocator, pos); // zero matches first
-                    // If lazy backtrack is disabled (find() mode), only return minimal (zero)
+                    // Lazy: zero first, then matching
+                    const zero_base = try self.pushState();
+                    try positions.append(self.allocator, .{ .end_pos = pos, .stack_base = zero_base });
                     if (!self.disable_lazy_backtrack) {
                         if (self.matchNode(quant.child, pos)) |end| {
-                            try positions.append(self.allocator, end);
+                            try positions.append(self.allocator, .{ .end_pos = end, .stack_base = try self.pushState() });
                         }
                     }
                 }
             },
             .repeat => {
                 const repeat = node.data.repeat;
-
-                // Possessive quantifiers: collect only maximal match
                 if (repeat.mode == .possessive) {
                     return try self.collectPossessiveRepeatMatches(repeat, pos, positions);
                 }
-
                 if (repeat.mode == .greedy) {
                     try self.collectGreedyRepeatMatches(repeat, pos, positions);
                 } else {
@@ -532,175 +557,147 @@ pub const BacktrackEngine = struct {
                 }
             },
             .concat => {
-                // Concat needs special handling: if it contains quantifiers, collect all positions
                 const concat = node.data.concat;
                 const left_has_quantifiers = self.hasQuantifiers(concat.left);
                 const right_has_quantifiers = self.hasQuantifiers(concat.right);
 
                 if (left_has_quantifiers) {
-                    // Collect all left positions
-                    var left_positions = std.ArrayList(usize).initCapacity(self.allocator, 0) catch return;
-                    defer left_positions.deinit(self.allocator);
-
-                    try self.collectAllMatches(concat.left, pos, &left_positions);
-
-                    // For each left position, collect all right positions
-                    if (right_has_quantifiers) {
-                        for (left_positions.items) |left_end| {
-                            try self.collectAllMatches(concat.right, left_end, positions);
-                        }
-                    } else {
-                        for (left_positions.items) |left_end| {
-                            if (self.matchNode(concat.right, left_end)) |right_end| {
-                                try positions.append(self.allocator, right_end);
+                    var left_matches = std.ArrayList(MatchState).initCapacity(self.allocator, 0) catch return;
+                    defer left_matches.deinit(self.allocator);
+                    try self.collectAllMatches(concat.left, pos, &left_matches);
+                    for (left_matches.items) |left_match| {
+                        self.peekState(left_match.stack_base); // restore left's capture state
+                        if (right_has_quantifiers) {
+                            try self.collectAllMatches(concat.right, left_match.end_pos, positions);
+                        } else {
+                            if (self.matchNode(concat.right, left_match.end_pos)) |right_end| {
+                                try positions.append(self.allocator, .{ .end_pos = right_end, .stack_base = try self.pushState() });
                             }
                         }
                     }
                 } else if (right_has_quantifiers) {
-                    // Match left once, then collect all right positions
                     if (self.matchNode(concat.left, pos)) |left_end| {
                         try self.collectAllMatches(concat.right, left_end, positions);
                     }
                 } else {
-                    // No quantifiers: single match
                     if (self.matchNode(node, pos)) |end| {
-                        try positions.append(self.allocator, end);
+                        try positions.append(self.allocator, .{ .end_pos = end, .stack_base = try self.pushState() });
                     }
                 }
             },
             else => {
-                // For non-quantifiers, there's only one possible match
                 if (self.matchNode(node, pos)) |end| {
-                    try positions.append(self.allocator, end);
+                    try positions.append(self.allocator, .{ .end_pos = end, .stack_base = try self.pushState() });
                 }
             },
         }
     }
 
-    fn collectGreedyStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
-        // Collect all matches from longest to shortest
-        var all_positions = std.ArrayList(usize).initCapacity(self.allocator, 0) catch return;
-        defer all_positions.deinit(self.allocator);
+    /// Greedy star: collect all positions from pos, snapshot captures at each step, return in reverse (longest first)
+    fn collectGreedyStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(MatchState)) !void {
+        var all = std.ArrayList(MatchState).initCapacity(self.allocator, 0) catch return;
+        defer all.deinit(self.allocator);
 
-        try all_positions.append(self.allocator, pos); // zero matches
-
+        // Snapshot at zero-match position
+        try all.append(self.allocator, .{ .end_pos = pos, .stack_base = try self.pushState() });
         var current_pos = pos;
         while (self.matchNode(child, current_pos)) |next_pos| {
-            if (next_pos == current_pos) break; // Prevent infinite loop
+            if (next_pos == current_pos) break;
             current_pos = next_pos;
-            try all_positions.append(self.allocator, current_pos);
+            // Snapshot AFTER each match so captures for this position are preserved
+            try all.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
         }
-
-        // Return in reverse order (greedy: longest first)
-        var i: usize = all_positions.items.len;
+        // Reverse into output (greedy: longest first)
+        var i: usize = all.items.len;
         while (i > 0) {
             i -= 1;
-            try positions.append(self.allocator, all_positions.items[i]);
+            try positions.append(self.allocator, all.items[i]);
         }
     }
 
-    fn collectLazyStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
-        // Collect all matches from shortest to longest
-        try positions.append(self.allocator, pos); // zero matches first
-
-        // If lazy backtrack is disabled (find() mode), only return minimal match
-        if (self.disable_lazy_backtrack) {
-            return;
-        }
-
+    /// Lazy star: collect positions from pos in order (shortest first), snapshot captures at each step
+    fn collectLazyStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(MatchState)) !void {
+        try positions.append(self.allocator, .{ .end_pos = pos, .stack_base = try self.pushState() }); // zero matches first
+        if (self.disable_lazy_backtrack) return;
         var current_pos = pos;
         while (self.matchNode(child, current_pos)) |next_pos| {
-            if (next_pos == current_pos) break; // Prevent infinite loop
+            if (next_pos == current_pos) break;
             current_pos = next_pos;
-            try positions.append(self.allocator, current_pos);
+            try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
         }
     }
 
-    fn collectGreedyRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(usize)) !void {
-        const min = repeat.bounds.min;
-        const max = repeat.bounds.max;
-
-        // Match minimum required times
+    /// Greedy repeat: collect positions after matching min..max times, return longest-first
+    fn collectGreedyRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         var current_pos = pos;
         var i: usize = 0;
-        while (i < min) : (i += 1) {
+        // Match minimum required times
+        while (i < repeat.bounds.min) : (i += 1) {
             current_pos = self.matchNode(repeat.child, current_pos) orelse return;
         }
 
-        // Collect all positions from min to max (or unbounded)
-        var all_positions = std.ArrayList(usize).initCapacity(self.allocator, 0) catch return;
-        defer all_positions.deinit(self.allocator);
+        var all = std.ArrayList(MatchState).initCapacity(self.allocator, 0) catch return;
+        defer all.deinit(self.allocator);
+        try all.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() }); // at-min position
 
-        try all_positions.append(self.allocator, current_pos);
-
-        if (max) |max_count| {
+        if (repeat.bounds.max) |max_count| {
             while (i < max_count) : (i += 1) {
-                if (self.matchNode(repeat.child, current_pos)) |next_pos| {
-                    if (next_pos == current_pos) break;
-                    current_pos = next_pos;
-                    try all_positions.append(self.allocator, current_pos);
-                } else break;
+                const next = self.matchNode(repeat.child, current_pos) orelse break;
+                if (next == current_pos) break;
+                current_pos = next;
+                try all.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
             }
         } else {
-            // Unbounded: keep matching until we can't
-            while (self.matchNode(repeat.child, current_pos)) |next_pos| {
-                if (next_pos == current_pos) break;
-                current_pos = next_pos;
-                try all_positions.append(self.allocator, current_pos);
+            while (self.matchNode(repeat.child, current_pos)) |next| {
+                if (next == current_pos) break;
+                current_pos = next;
+                try all.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
             }
         }
-
-        // Return in reverse order (greedy: longest first)
-        var j: usize = all_positions.items.len;
+        // Reverse: longest first
+        var j: usize = all.items.len;
         while (j > 0) {
             j -= 1;
-            try positions.append(self.allocator, all_positions.items[j]);
+            try positions.append(self.allocator, all.items[j]);
         }
     }
 
-    fn collectLazyRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(usize)) !void {
-        const min = repeat.bounds.min;
-        const max = repeat.bounds.max;
-
-        // Match minimum required times
+    /// Lazy repeat: collect positions after matching min..max times, snapshot captures, return shortest-first
+    fn collectLazyRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         var current_pos = pos;
         var i: usize = 0;
-        while (i < min) : (i += 1) {
+        while (i < repeat.bounds.min) : (i += 1) {
             current_pos = self.matchNode(repeat.child, current_pos) orelse return;
         }
+        try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() }); // at-min first
+        if (self.disable_lazy_backtrack) return;
 
-        // Return positions from min to max (lazy: shortest first)
-        try positions.append(self.allocator, current_pos);
-
-        // If lazy backtrack is disabled (find() mode), only return minimal match
-        if (self.disable_lazy_backtrack) {
-            return;
-        }
-
-        if (max) |max_count| {
+        if (repeat.bounds.max) |max_count| {
             while (i < max_count) : (i += 1) {
-                if (self.matchNode(repeat.child, current_pos)) |next_pos| {
-                    if (next_pos == current_pos) break;
-                    current_pos = next_pos;
-                    try positions.append(self.allocator, current_pos);
-                } else break;
+                const next = self.matchNode(repeat.child, current_pos) orelse break;
+                if (next == current_pos) break;
+                current_pos = next;
+                try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
             }
         } else {
-            // Unbounded: keep matching until we can't
-            while (self.matchNode(repeat.child, current_pos)) |next_pos| {
-                if (next_pos == current_pos) break;
-                current_pos = next_pos;
-                try positions.append(self.allocator, current_pos);
+            while (self.matchNode(repeat.child, current_pos)) |next| {
+                if (next == current_pos) break;
+                current_pos = next;
+                try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
             }
         }
     }
 
     fn matchAlternation(self: *BacktrackEngine, alt: ast.Node.Alternation, pos: usize) ?usize {
-        // Try left first
+        // Save state so a failing left branch doesn't pollute captures for the right branch.
+        // dropState(left_success)  = keep captures from successful left branch
+        // popState(left_failure)   = restore to pre-left state before trying right branch
+        const stack_base = self.pushState() catch return null;
         if (self.matchNode(alt.left, pos)) |end| {
+            self.dropState(stack_base); // SUCCESS: left captures are valid, keep them
             return end;
         }
-        // Try right
+        self.popState(stack_base); // FAILURE: discard left's partial captures, restore pre-left state
         return self.matchNode(alt.right, pos);
     }
 
@@ -803,46 +800,37 @@ pub const BacktrackEngine = struct {
     }
 
     /// Collect possessive star matches: only maximal match (no backtracking)
-    fn collectPossessiveStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
+    fn collectPossessiveStarMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         var current_pos = pos;
-        // Match as many times as possible
         while (self.matchNode(child, current_pos)) |next| {
-            if (next == current_pos) break; // Prevent infinite loop on empty matches
+            if (next == current_pos) break;
             current_pos = next;
         }
-        // Only return the maximal match position
-        try positions.append(self.allocator, current_pos);
+        try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
     }
 
     /// Collect possessive plus matches: only maximal match (no backtracking)
-    fn collectPossessivePlusMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
-        // Must match at least once
+    fn collectPossessivePlusMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         const first_match = self.matchNode(child, pos) orelse return;
-
         var current_pos = first_match;
-        // Match as many more times as possible
         while (self.matchNode(child, current_pos)) |next| {
-            if (next == current_pos) break; // Prevent infinite loop
+            if (next == current_pos) break;
             current_pos = next;
         }
-        // Only return the maximal match position
-        try positions.append(self.allocator, current_pos);
+        try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
     }
 
     /// Collect possessive optional matches: only maximal match (no backtracking)
-    fn collectPossessiveOptionalMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(usize)) !void {
-        // Try to match once
+    fn collectPossessiveOptionalMatches(self: *BacktrackEngine, child: *ast.Node, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         if (self.matchNode(child, pos)) |next| {
-            // Matched: return the match position only
-            try positions.append(self.allocator, next);
+            try positions.append(self.allocator, .{ .end_pos = next, .stack_base = try self.pushState() });
         } else {
-            // Didn't match: return original position only
-            try positions.append(self.allocator, pos);
+            try positions.append(self.allocator, .{ .end_pos = pos, .stack_base = try self.pushState() });
         }
     }
 
     /// Collect possessive repeat matches: only maximal match (no backtracking)
-    fn collectPossessiveRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(usize)) !void {
+    fn collectPossessiveRepeatMatches(self: *BacktrackEngine, repeat: ast.Node.Repeat, pos: usize, positions: *std.ArrayList(MatchState)) !void {
         const min = repeat.bounds.min;
         const max = repeat.bounds.max;
 
@@ -878,8 +866,7 @@ pub const BacktrackEngine = struct {
             }
         }
 
-        // Only return the maximal match position
-        try positions.append(self.allocator, current_pos);
+        try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
     }
 
     fn decodeUtf8ForwardWithLen(input: []const u8, pos: usize) ?struct { codepoint: u21, len: u8 } {
@@ -922,6 +909,14 @@ pub const BacktrackEngine = struct {
         self.state_stack.shrinkRetainingCapacity(stack_base);
     }
 
+    /// Load captures from a saved stack snapshot WITHOUT modifying the stack size.
+    /// Used in matchConcat Phase 2: for each candidate MatchState, peekState() teleports
+    /// the capture array back to the exact nanosecond that position was found — O(capture_count) memcpy only.
+    inline fn peekState(self: *BacktrackEngine, stack_base: usize) void {
+        const saved_slice = self.state_stack.items[stack_base .. stack_base + self.captures.len];
+        @memcpy(self.captures, saved_slice);
+    }
+
     fn matchGroup(self: *BacktrackEngine, group: ast.Node.Group, pos: usize) ?usize {
         const end_pos = self.matchNode(group.child, pos) orelse return null;
 
@@ -939,9 +934,25 @@ pub const BacktrackEngine = struct {
     }
 
     fn matchBackref(self: *BacktrackEngine, backref: ast.Node.Backreference, pos: usize) ?usize {
-        if (backref.index == 0 or backref.index > self.captures.len) return null;
-        const cap = self.captures[backref.index - 1];
-        if (!cap.matched) return null;
+        // Resolve index: use absolute index if > 0, otherwise lookup by name.
+        // Returns null for invalid references (unmatched name, no index) — caller decides behavior.
+        const resolved_idx: ?usize = if (backref.index > 0) backref.index else blk: {
+            if (backref.name) |name| {
+                break :blk self.named_captures.get(name);
+            }
+            break :blk null;
+        };
+
+        const idx = resolved_idx orelse return null; // Unresolved reference
+        if (idx > self.captures.len) return null; // Out of bounds
+
+        const cap = self.captures[idx - 1];
+        if (!cap.matched) {
+            // Forward relative refs (\g{+n}) reference a group not yet captured.
+            // PCRE2 treats them as matching empty string (permissive forward-ref semantics).
+            // All other unmatched backrefs (\1, \k<name>, \g{n}, \g{-n}) fail the match.
+            return if (backref.is_forward_ref) pos else null;
+        }
 
         const expected_str = self.input[cap.start..cap.end];
         if (pos + expected_str.len > self.input.len) return null;
@@ -960,22 +971,17 @@ pub const BacktrackEngine = struct {
     }
 
     fn matchLookahead(self: *BacktrackEngine, assertion: ast.Node.Assertion, pos: usize) ?usize {
-        // Save current captures
-        const saved_captures = self.allocator.dupe(CaptureGroup, self.captures) catch return null;
-        defer self.allocator.free(saved_captures);
-
-        // Try to match child at current position
+        const stack_base = self.pushState() catch return null;
         const child_match = self.matchNode(assertion.child, pos);
 
-        // Restore captures (lookahead doesn't consume)
-        @memcpy(self.captures, saved_captures);
-
-        // Return based on assertion type
-        if (assertion.positive) {
-            return if (child_match != null) pos else null;
-        } else {
-            return if (child_match == null) pos else null;
+        // PCRE semantics: captures made inside a positive lookahead persist if successful
+        if (assertion.positive and child_match != null) {
+            self.dropState(stack_base);
+            return pos;
         }
+
+        self.popState(stack_base);
+        return if (!assertion.positive and child_match == null) pos else null;
     }
 
     fn matchAtomicGroup(self: *BacktrackEngine, atomic: anytype, pos: usize) ?usize {
@@ -1234,7 +1240,7 @@ test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
     var named_captures = std.StringHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
     // Should timeout/abort instead of hanging
@@ -1272,7 +1278,7 @@ test "backtrack: ReDoS protection - nested stars (a*)*b" {
     var named_captures = std.StringHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
     const result = engine.find(input);
@@ -1302,7 +1308,7 @@ test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
     var named_captures = std.StringHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
     const result = engine.find(input);
@@ -1332,7 +1338,7 @@ test "backtrack: configurable step limit" {
     var named_captures = std.StringHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
     // Set a very low limit to test timeout behavior
@@ -1368,7 +1374,7 @@ test "backtrack: step counter increments" {
     var named_captures = std.StringHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures);
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
     const initial_count = engine.step_count;
