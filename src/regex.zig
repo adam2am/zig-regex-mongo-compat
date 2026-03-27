@@ -286,6 +286,8 @@ pub const SessionIterator = struct {
 pub const ExecutionSession = struct {
     regex: *const Regex,
     allocator: std.mem.Allocator,
+    /// Reusable scratch storage for the allocating `find()` convenience path.
+    scratch_match: MatchBuffer,
     engine: union(enum) {
         nfa: vm.BytecodeVM,
         backtrack: backtrack.BacktrackEngine,
@@ -293,15 +295,29 @@ pub const ExecutionSession = struct {
 
     pub fn init(allocator: std.mem.Allocator, regex: *const Regex) !ExecutionSession {
         return switch (regex.engine_type) {
-            .thompson_nfa => .{
-                .regex = regex,
-                .allocator = allocator,
-                .engine = .{ .nfa = try vm.BytecodeVM.init(allocator, regex.program.?, regex.word_boundary_policy, regex.input_validation_policy == .strict_utf8) },
+            .thompson_nfa => blk: {
+                var engine = try vm.BytecodeVM.init(allocator, regex.program.?, regex.word_boundary_policy, regex.input_validation_policy == .strict_utf8);
+                errdefer engine.deinit();
+
+                const scratch_match = try MatchBuffer.init(allocator, regex.capture_count);
+                break :blk .{
+                    .regex = regex,
+                    .allocator = allocator,
+                    .scratch_match = scratch_match,
+                    .engine = .{ .nfa = engine },
+                };
             },
-            .backtracking => .{
-                .regex = regex,
-                .allocator = allocator,
-                .engine = .{ .backtrack = try backtrack.BacktrackEngine.init(allocator, regex.ast.?.root, regex.capture_count, regex.flags, if (regex.named_captures) |*nc| nc else null, regex.word_boundary_policy) },
+            .backtracking => blk: {
+                var engine = try backtrack.BacktrackEngine.init(allocator, regex.ast.?.root, regex.capture_count, regex.flags, if (regex.named_captures) |*nc| nc else null, regex.word_boundary_policy);
+                errdefer engine.deinit();
+
+                const scratch_match = try MatchBuffer.init(allocator, regex.capture_count);
+                break :blk .{
+                    .regex = regex,
+                    .allocator = allocator,
+                    .scratch_match = scratch_match,
+                    .engine = .{ .backtrack = engine },
+                };
             },
         };
     }
@@ -311,6 +327,7 @@ pub const ExecutionSession = struct {
             .nfa => |*e| e.deinit(),
             .backtrack => |*e| e.deinit(),
         }
+        self.scratch_match.deinit();
     }
 
     pub fn setMaxSteps(self: *ExecutionSession, max_steps: usize) void {
@@ -345,11 +362,8 @@ pub const ExecutionSession = struct {
     pub fn find(self: *ExecutionSession, input: []const u8) !?Match {
         try self.regex.validateInput(input);
 
-        var buffer = try self.regex.matchBuffer(self.allocator);
-        defer buffer.deinit();
-
-        if (!(try self.findIntoAssumeValid(input, &buffer))) return null;
-        return try materializeMatchFromBuffer(self.allocator, &buffer);
+        if (!(try self.findIntoAssumeValid(input, &self.scratch_match))) return null;
+        return try materializeMatchFromBuffer(self.allocator, &self.scratch_match);
     }
 
     pub fn findInto(self: *ExecutionSession, input: []const u8, buffer: *MatchBuffer) !bool {
@@ -417,17 +431,6 @@ pub const ExecutionSession = struct {
         };
     }
 
-    fn buildMatch(self: *ExecutionSession, input: []const u8, start: usize, end: usize, nfa_caps: []const vm.MatchResult.Capture) !Match {
-        const captures = try self.allocator.alloc([]const u8, self.regex.capture_count);
-        for (nfa_caps, 0..) |c, i| captures[i] = c.text;
-        return Match{ .slice = input[start..end], .start = start, .end = end, .captures = captures };
-    }
-
-    fn buildBacktrackMatch(self: *ExecutionSession, input: []const u8, res: backtrack.BacktrackMatch) !Match {
-        const captures = try self.allocator.alloc([]const u8, self.regex.capture_count);
-        for (res.captures, 0..) |c, i| captures[i] = if (c.matched) input[c.start..c.end] else "";
-        return Match{ .slice = input[res.start..res.end], .start = res.start, .end = res.end, .captures = captures };
-    }
 };
 
 /// Compatibility alias. Prefer `ExecutionSession` in new code.
