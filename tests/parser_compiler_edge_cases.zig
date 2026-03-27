@@ -1,6 +1,7 @@
 const std = @import("std");
 const Regex = @import("regex").Regex;
 const RegexError = @import("regex").RegexError;
+const CompileFlags = @import("regex").common.CompileFlags;
 
 // =============================================================================
 // Parser and compiler edge cases - invalid patterns, boundary syntax, etc.
@@ -30,28 +31,14 @@ test "parser: deeply nested groups" {
     try std.testing.expect(try regex.isMatch("a"));
 }
 
-test "parser: consecutive quantifiers accepted by Thompson NFA" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Thompson NFA can handle this safely
-    var regex = try Regex.compile(allocator, "a**");
-    defer regex.deinit();
-    try std.testing.expect(try regex.isMatch(""));
-    try std.testing.expect(try regex.isMatch("aaa"));
+test "parser: consecutive quantifiers are rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidQuantifier, Regex.compile(allocator, "a**"));
 }
 
-test "parser: quantifier on quantifier accepted by Thompson NFA" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Thompson NFA can handle this safely
-    var regex = try Regex.compile(allocator, "a+*");
-    defer regex.deinit();
-    try std.testing.expect(try regex.isMatch(""));
-    try std.testing.expect(try regex.isMatch("aaa"));
+test "parser: quantifier on quantifier is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidQuantifier, Regex.compile(allocator, "a+*"));
 }
 
 test "parser: empty alternation branch is valid" {
@@ -479,5 +466,128 @@ test "parser: null byte in pattern is an error" {
     const allocator = std.testing.allocator;
     const result = Regex.compile(allocator, "A\\x00B");
     try std.testing.expectError(RegexError.InvalidPattern, result);
+}
+
+test "parser: \\Q...\\E quotes metacharacters literally" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\Q[a-z]+(foo)?\\E");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("[a-z]+(foo)?"));
+    try std.testing.expect(!try regex.isMatch("abc"));
+}
+
+test "parser: \\Q...\\E re-enables regex syntax after \\E" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\Qabc.\\E\\d+");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("abc.123"));
+    try std.testing.expect(!try regex.isMatch("abc.xyz"));
+}
+
+test "parser: \\Q...\\E makes alternation literal" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\Qa|b\\E");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("a|b"));
+    try std.testing.expect(!try regex.isMatch("a"));
+}
+
+test "parser: \\Q...\\E quotes quantifiers and dot literally" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Q.*+?\\E$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch(".*+?"));
+    try std.testing.expect(!try regex.isMatch("...."));
+}
+
+test "parser: \\Q...\\E with trailing active regex syntax" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Q(test)\\E(test)$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("(test)test"));
+    try std.testing.expect(!try regex.isMatch("testtest"));
+}
+
+test "parser: \\Q...\\E with unicode literal payload" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Qé+🙂\\E$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("é+🙂"));
+    try std.testing.expect(!try regex.isMatch("é🙂"));
+}
+
+test "parser: unterminated \\Q quotes remainder literally" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\Qabc");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("abc"));
+    try std.testing.expect(!try regex.isMatch("ab"));
+}
+
+test "parser: \\Q...\\E with Unicode BMP payload only" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Qé+\\E$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("é+"));
+    try std.testing.expect(!try regex.isMatch("é"));
+}
+
+test "parser: \\Q...\\E with emoji payload only" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Q🙂\\E$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("🙂"));
+    try std.testing.expect(!try regex.isMatch("x"));
+}
+
+test "parser: \\Q...\\E with mixed Unicode and ASCII payload" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Qé+🙂\\E$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("é+🙂"));
+    try std.testing.expect(!try regex.isMatch("é🙂"));
+}
+
+test "parser: quoted Unicode resumes active regex after \\E" {
+    const allocator = std.testing.allocator;
+    var regex_compiled = try Regex.compile(allocator, "\\Qé.\\E\\d+");
+    defer regex_compiled.deinit();
+
+    try std.testing.expect(try regex_compiled.isMatch("é.123"));
+    try std.testing.expect(!try regex_compiled.isMatch("é.xyz"));
+}
+
+test "compileWithFlags: empty Unicode property is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidUnicodeProperty, Regex.compileWithFlags(allocator, "\\p{}", CompileFlags{}));
+}
+
+test "compileWithFlags: nonexistent numeric backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compileWithFlags(allocator, "\\9", CompileFlags{}));
+}
+
+test "compileWithFlags: nonexistent named backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compileWithFlags(allocator, "\\k<missing>", CompileFlags{}));
+}
+
+test "compileWithFlags: quoted Unicode literal compiles and matches" {
+    const allocator = std.testing.allocator;
+    var regex_compiled = try Regex.compileWithFlags(allocator, "^\\Qé+🙂\\E$", CompileFlags{});
+    defer regex_compiled.deinit();
+
+    try std.testing.expect(try regex_compiled.isMatch("é+🙂"));
+    try std.testing.expect(!try regex_compiled.isMatch("é🙂"));
 }
 
