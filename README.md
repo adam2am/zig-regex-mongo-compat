@@ -58,6 +58,7 @@ The current architecture uses a **bytecode VM** as the primary engine for the re
 | **Unicode Scripts** | `\p{Latin}`, `\p{Greek}`, `\p{Cyrillic}` | ✅ Stable |
 | | `\p{Arabic}`, `\p{Hebrew}` | ✅ Stable |
 | | `\p{Han}`, `\p{Hiragana}`, `\p{Katakana}` | ✅ Stable |
+| **Additional script properties** | e.g. `\p{Hangul}` | ➖ Not implemented yet |
 | **PCRE Flags** | `(*UTF)`, `(*UCP)` | ✅ Stable |
 | **Unicode \b** | `(*UCP)` with `\b` | ✅ Stable |
 | **Unicode \w** | `(*UCP)` with `\w` | ✅ Stable |
@@ -106,7 +107,7 @@ The current architecture uses a **bytecode VM** as the primary engine for the re
 - **ReDoS Protection**: Planning + hard-abort protection prevent catastrophic backtracking from taking down matching
 - **608 Zig Tests**: 608/608 passing (100%) - native low-level coverage across anchors (`\\A`, `\\z`, `\\Z`), recursion, backreferences, Unicode, atomic groups, graphemes, and parser/compiler hardening
 - **304 Companion Integration Tests**: Verified in the `bson_helpers` SQLite wrapper suite, covering BSON path extraction, wrapper cache isolation, error propagation, and MongoDB-style end-to-end PCRE edge cases
-- **Production Ready**: Core features stable, Unicode support complete, known limitations documented
+- **Production Ready**: Core features stable, implemented Unicode/script support well-covered, and known limitations documented
 
 ## Installation
 
@@ -227,7 +228,8 @@ bun run build && bun test/ts/test_edge_cases.ts
 
 ### ✅ Fully Working
 - Core regex features (anchors, quantifiers, character classes, groups)
-- Unicode support (8 scripts: Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
+- Unicode support for the currently implemented script properties (Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
+- Literal and `(*UCP)` boundary coverage for additional non-ASCII text such as Hangul/Korean
 - PCRE flags (`(*UTF)`, `(*UCP)`)
 - Lookahead/lookbehind (positive and negative)
 - Backreferences and named groups
