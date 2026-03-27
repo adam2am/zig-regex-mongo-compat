@@ -39,6 +39,7 @@ pub const BytecodeVM = struct {
     allocator: std.mem.Allocator,
     prog: bytecode.BytecodeProgram,
     word_boundary_policy: text_policy.WordBoundaryPolicy,
+    trusted_utf8: bool,
 
     // Reused buffers keep the hot path allocation-free in the common case.
     current_threads: std.ArrayListUnmanaged(Thread),
@@ -46,7 +47,7 @@ pub const BytecodeVM = struct {
     visited: []bool,
     capture_pool: std.ArrayListUnmanaged(CaptureNode),
 
-    pub fn init(allocator: std.mem.Allocator, prog: bytecode.BytecodeProgram, word_boundary_policy: text_policy.WordBoundaryPolicy) !BytecodeVM {
+    pub fn init(allocator: std.mem.Allocator, prog: bytecode.BytecodeProgram, word_boundary_policy: text_policy.WordBoundaryPolicy, trusted_utf8: bool) !BytecodeVM {
         const inst_count = prog.instructions.len;
         const current_threads = try std.ArrayListUnmanaged(Thread).initCapacity(allocator, inst_count);
         const next_threads = try std.ArrayListUnmanaged(Thread).initCapacity(allocator, inst_count);
@@ -58,6 +59,7 @@ pub const BytecodeVM = struct {
             .allocator = allocator,
             .prog = prog,
             .word_boundary_policy = word_boundary_policy,
+            .trusted_utf8 = trusted_utf8,
             .current_threads = current_threads,
             .next_threads = next_threads,
             .visited = visited,
@@ -136,6 +138,13 @@ pub const BytecodeVM = struct {
         return true;
     }
 
+    fn decodeAt(self: *BytecodeVM, input: []const u8, pos: usize) !unicode.Utf8DecodeResult {
+        if (self.trusted_utf8) {
+            return unicode.decodeUtf8Trusted(input, pos);
+        }
+        return unicode.decodeUtf8(input[pos..]) catch return errors.RegexError.InvalidUtf8;
+    }
+
     fn searchMatchAt(self: *BytecodeVM, input: []const u8, start_pos: usize, stop_on_first_match: bool) !?SearchResult {
         self.current_threads.clearRetainingCapacity();
         self.next_threads.clearRetainingCapacity();
@@ -153,6 +162,8 @@ pub const BytecodeVM = struct {
 
             @memset(self.visited, false);
 
+            const utf8 = if (pos < input.len) try self.decodeAt(input, pos) else null;
+
             for (self.current_threads.items) |thread| {
                 const inst = self.prog.instructions[thread.pc];
 
@@ -165,9 +176,7 @@ pub const BytecodeVM = struct {
                     continue;
                 }
 
-                if (pos >= input.len) continue;
-
-                const utf8 = unicode.decodeUtf8(input[pos..]) catch return errors.RegexError.InvalidUtf8;
+                const decoded = utf8 orelse continue;
 
                 const matched = switch (inst.op) {
                     .char => blk: {
@@ -176,18 +185,18 @@ pub const BytecodeVM = struct {
                         const ignore_case = (arg >> 21) != 0;
 
                         if (ignore_case) {
-                            break :blk unicode.toLower(target) == unicode.toLower(utf8.codepoint);
+                            break :blk unicode.toLower(target) == unicode.toLower(decoded.codepoint);
                         } else {
-                            break :blk target == utf8.codepoint;
+                            break :blk target == decoded.codepoint;
                         }
                     },
-                    .any => if (inst.arg == 1) true else utf8.codepoint != '\n',
-                    .char_class => self.prog.classes[@intCast(inst.arg)].matches(utf8.codepoint),
+                    .any => if (inst.arg == 1) true else decoded.codepoint != '\n',
+                    .char_class => self.prog.classes[@intCast(inst.arg)].matches(decoded.codepoint),
                     else => false,
                 };
 
                 if (matched) {
-                    try self.addThread(&self.next_threads, thread.pc + 1, thread.cap_idx, pos + utf8.len, input);
+                    try self.addThread(&self.next_threads, thread.pc + 1, thread.cap_idx, pos + decoded.len, input);
                 }
             }
 
@@ -198,8 +207,8 @@ pub const BytecodeVM = struct {
             self.next_threads = tmp;
             self.next_threads.clearRetainingCapacity();
 
-            const utf8_step = unicode.decodeUtf8(input[pos..]) catch break;
-            pos += utf8_step.len;
+            const step = utf8 orelse break;
+            pos += step.len;
         }
 
         if (best_end) |end| {

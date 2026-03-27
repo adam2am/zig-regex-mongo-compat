@@ -296,7 +296,7 @@ pub const ExecutionSession = struct {
             .thompson_nfa => .{
                 .regex = regex,
                 .allocator = allocator,
-                .engine = .{ .nfa = try vm.BytecodeVM.init(allocator, regex.program.?, regex.word_boundary_policy) },
+                .engine = .{ .nfa = try vm.BytecodeVM.init(allocator, regex.program.?, regex.word_boundary_policy, regex.input_validation_policy == .strict_utf8) },
             },
             .backtracking => .{
                 .regex = regex,
@@ -345,46 +345,11 @@ pub const ExecutionSession = struct {
     pub fn find(self: *ExecutionSession, input: []const u8) !?Match {
         try self.regex.validateInput(input);
 
-        return switch (self.engine) {
-            .nfa => |*e| blk: {
-                // Optimization: Literal prefix scan
-                if (!self.regex.flags.case_insensitive) {
-                    if (self.regex.opt_info.literal_prefix) |prefix| {
-                        if (prefix.len > 0 and prefix[0] < 128) {
-                            const first: u8 = @intCast(prefix[0]);
-                            var search_pos: usize = 0;
-                            while (std.mem.indexOfScalar(u8, input[search_pos..], first)) |rel| {
-                                const abs = search_pos + rel;
-                                var res: vm.MatchResult = undefined;
-                                if (try e.matchAt(input, abs, &res)) {
-                                    defer res.deinit(self.allocator);
-                                    break :blk try self.buildMatch(input, abs, res.end, res.captures);
-                                }
-                                search_pos = abs + 1;
-                            }
-                            break :blk null;
-                        }
-                    }
-                }
+        var buffer = try self.regex.matchBuffer(self.allocator);
+        defer buffer.deinit();
 
-                var search_pos: usize = 0;
-                while (search_pos <= input.len) {
-                    var res: vm.MatchResult = undefined;
-                    if (try e.matchAt(input, search_pos, &res)) {
-                        defer res.deinit(self.allocator);
-                        break :blk try self.buildMatch(input, search_pos, res.end, res.captures);
-                    }
-                    if (search_pos >= input.len) break;
-                    search_pos += (unicode.decodeUtf8(input[search_pos..]) catch break).len;
-                }
-                break :blk null;
-            },
-            .backtrack => |*e| if (try e.find(input)) |res| {
-                var mut_res = res;
-                defer mut_res.deinit(self.allocator);
-                return try self.buildBacktrackMatch(input, res);
-            } else null,
-        };
+        if (!(try self.findIntoAssumeValid(input, &buffer))) return null;
+        return try materializeMatchFromBuffer(self.allocator, &buffer);
     }
 
     pub fn findInto(self: *ExecutionSession, input: []const u8, buffer: *MatchBuffer) !bool {

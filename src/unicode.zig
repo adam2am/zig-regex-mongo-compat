@@ -2,6 +2,7 @@ const std = @import("std");
 
 /// Unicode codepoint
 pub const Codepoint = u21;
+pub const Utf8DecodeResult = struct { codepoint: Codepoint, len: u3 };
 
 /// Get the length in bytes of a UTF-8 encoded character from its first byte
 pub fn utf8ByteSequenceLength(first_byte: u8) u3 {
@@ -26,7 +27,7 @@ pub fn stepBackward(bytes: []const u8, current_pos: usize) usize {
 
 /// Decode a UTF-8 codepoint from a byte slice
 /// Returns the codepoint and the number of bytes consumed
-pub fn decodeUtf8(bytes: []const u8) !struct { codepoint: Codepoint, len: u3 } {
+pub fn decodeUtf8(bytes: []const u8) !Utf8DecodeResult {
     if (bytes.len == 0) return error.InvalidUtf8;
 
     const first = bytes[0];
@@ -73,6 +74,36 @@ pub fn decodeUtf8(bytes: []const u8) !struct { codepoint: Codepoint, len: u3 } {
     };
 
     return .{ .codepoint = codepoint, .len = len };
+}
+
+/// Decode a UTF-8 codepoint from a validated UTF-8 byte buffer.
+/// Contract: `pos` must be within bounds and point at the start of a valid UTF-8 sequence.
+pub inline fn decodeUtf8Trusted(bytes: []const u8, pos: usize) Utf8DecodeResult {
+    const first = bytes[pos];
+    if (first < 0x80) return .{ .codepoint = first, .len = 1 };
+
+    if (first < 0xE0) {
+        return .{
+            .codepoint = (@as(Codepoint, first & 0x1F) << 6) | @as(Codepoint, bytes[pos + 1] & 0x3F),
+            .len = 2,
+        };
+    }
+    if (first < 0xF0) {
+        return .{
+            .codepoint = (@as(Codepoint, first & 0x0F) << 12) |
+                (@as(Codepoint, bytes[pos + 1] & 0x3F) << 6) |
+                @as(Codepoint, bytes[pos + 2] & 0x3F),
+            .len = 3,
+        };
+    }
+
+    return .{
+        .codepoint = (@as(Codepoint, first & 0x07) << 18) |
+            (@as(Codepoint, bytes[pos + 1] & 0x3F) << 12) |
+            (@as(Codepoint, bytes[pos + 2] & 0x3F) << 6) |
+            @as(Codepoint, bytes[pos + 3] & 0x3F),
+        .len = 4,
+    };
 }
 
 /// Encode a codepoint to UTF-8 bytes
@@ -259,6 +290,16 @@ test "UTF-8 decoding" {
     const four_byte = try decodeUtf8("\u{1D573}");
     try std.testing.expectEqual(@as(Codepoint, 0x1D573), four_byte.codepoint);
     try std.testing.expectEqual(@as(u3, 4), four_byte.len);
+}
+
+test "unicode: trusted UTF-8 decoding matches checked decoder" {
+    const samples = [_][]const u8{ "a", "é", "€", "𝕳", "👨‍👩‍👧‍👦"[0..4] };
+    for (samples) |sample| {
+        const checked = try decodeUtf8(sample);
+        const trusted = decodeUtf8Trusted(sample, 0);
+        try std.testing.expectEqual(checked.codepoint, trusted.codepoint);
+        try std.testing.expectEqual(checked.len, trusted.len);
+    }
 }
 
 test "UTF-8 encoding" {
