@@ -71,3 +71,8 @@ test "word boundary with UCP treats non-ASCII letters as word chars" {
 
     try testing.expect(try re.isMatch("\u{00D6}yster"));
 }
+
+test "Unicode property: empty braces are rejected" {
+    const allocator = testing.allocator;
+    try testing.expectError(regex.RegexError.InvalidUnicodeProperty, regex.Regex.compile(allocator, "\\p{}"));
+}

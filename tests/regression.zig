@@ -188,3 +188,62 @@ test "regression: nested bounded quantifier on quantified group" {
     // Integration regression from bson edge-case Test 45i: this pattern must compile and match.
     try std.testing.expect(try regex.isMatch("aaaaa"));
 }
+
+test "regression: unterminated \\Q quotes until end of pattern" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\Qabc");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("abc"));
+    try std.testing.expect(!try regex.isMatch("ab"));
+}
+
+test "regression: \\Q...\\E quotes metacharacters literally" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^\\Q[a-z]+(foo)?\\E$");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("[a-z]+(foo)?"));
+    try std.testing.expect(!try regex.isMatch("a"));
+}
+
+test "regression: \\Q...\\E re-enables regex syntax after \\E" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\Qabc.\\E\\d+");
+    defer regex.deinit();
+
+    if (try regex.find("abc.123")) |match| {
+        defer match.deinit(allocator);
+        try std.testing.expectEqualStrings("abc.123", match.slice);
+    } else return error.TestExpectedMatch;
+}
+
+test "regression: malformed unicode property \\p{} is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidUnicodeProperty, Regex.compile(allocator, "\\p{}"));
+}
+
+test "regression: nonexistent numeric backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\9"));
+}
+
+test "regression: nonexistent named backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\k<missing>"));
+}
+
+test "regression: empty extended backreference \\g{} is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\g{}"));
+}
+
+test "regression: out-of-range absolute extended backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\g{999}"));
+}
+
+test "regression: repeated quantifier a** is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidQuantifier, Regex.compile(allocator, "a**"));
+}

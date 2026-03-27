@@ -1,5 +1,6 @@
 const std = @import("std");
 const Regex = @import("regex").Regex;
+const RegexError = @import("regex").RegexError;
 
 // Backreference Tests
 
@@ -305,4 +306,69 @@ test "pattern backreference: unmatched reference returns null" {
 
     try std.testing.expect(try regex.isMatch("abac")); // Group 1 matched 'a', \1 requires 'a'
     try std.testing.expect(!try regex.isMatch("bc")); // Group 1 unmatched, \1 fails — no empty-match compat
+}
+
+test "pattern backreference: \\g{1} works with quoted literal capture" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(\\Q.\\E)\\g{1}");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch(".."));
+    try std.testing.expect(!try regex.isMatch(".x"));
+}
+
+test "pattern backreference: \\g{name} works after named capture with unicode payload" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?<word>é)\\g{word}");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("éé"));
+    try std.testing.expect(!try regex.isMatch("ée"));
+}
+
+test "pattern backreference: \\g{-1} works after quoted literal capture" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(\\Q+\\E)\\g{-1}");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("++"));
+    try std.testing.expect(!try regex.isMatch("+-"));
+}
+
+test "pattern backreference: \\g{+1} fails cleanly when forward group content does not match" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(a)\\g{+1}(c)");
+    defer regex.deinit();
+
+    try std.testing.expect(!try regex.isMatch("aba"));
+    try std.testing.expect(try regex.isMatch("aac"));
+}
+
+test "pattern backreference: out-of-range absolute \\g{999} is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\g{999}"));
+}
+
+test "pattern backreference: empty \\g{} is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\g{}"));
+}
+
+test "pattern backreference: nonexistent numeric backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\9"));
+}
+
+test "pattern backreference: nonexistent named backreference is rejected" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.InvalidBackreference, Regex.compile(allocator, "\\k<missing>"));
+}
+
+test "pattern backreference: quoted Unicode capture works with \\g{1}" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(\\Qé\\E)\\g{1}");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("éé"));
+    try std.testing.expect(!try regex.isMatch("ée"));
 }

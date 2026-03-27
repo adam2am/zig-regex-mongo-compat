@@ -165,6 +165,54 @@ test "execution_session: findInto rejects wrong-sized buffer" {
     try std.testing.expectError(RegexError.InvalidArgument, session.findInto("ab", &buffer));
 }
 
+test "execution_session: find matches findInto on trusted utf8 nfa path" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "(é+)");
+    defer re.deinit();
+
+    var session = try re.session(allocator);
+    defer session.deinit();
+
+    var buffer = try re.matchBuffer(allocator);
+    defer buffer.deinit();
+
+    const found_into = try session.findInto("xééy", &buffer);
+    try std.testing.expect(found_into);
+    try std.testing.expectEqualStrings("éé", buffer.slice);
+    try std.testing.expectEqualStrings("éé", buffer.captures[0].text);
+
+    if (try session.find("xééy")) |match| {
+        defer match.deinit(allocator);
+        try std.testing.expectEqualStrings(buffer.slice, match.slice);
+        try std.testing.expectEqualStrings(buffer.captures[0].text, match.captures[0]);
+    } else return error.TestExpectedMatch;
+}
+
+test "execution_session: repeated find reuses scratch safely across outcomes" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "(é+)");
+    defer re.deinit();
+
+    var session = try re.session(allocator);
+    defer session.deinit();
+
+    if (try session.find("xééy")) |first| {
+        defer first.deinit(allocator);
+        try std.testing.expectEqualStrings("éé", first.slice);
+        try std.testing.expectEqualStrings("éé", first.captures[0]);
+    } else return error.TestExpectedMatch;
+
+    try std.testing.expect((try session.find("nomatch")) == null);
+
+    if (try session.find("ééé!")) |second| {
+        defer second.deinit(allocator);
+        try std.testing.expectEqualStrings("ééé", second.slice);
+        try std.testing.expectEqualStrings("ééé", second.captures[0]);
+    } else return error.TestExpectedMatch;
+}
+
 test "execution_session: findAll reuses bulk primitive for multiple thompson matches" {
     const allocator = std.testing.allocator;
 
