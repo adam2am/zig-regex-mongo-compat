@@ -13,6 +13,7 @@ const pattern_analyzer = @import("pattern_analyzer.zig");
 const execution_plan = @import("execution_plan.zig");
 const text_policy = @import("text_policy.zig");
 const match_types = @import("match_types.zig");
+const semantic_validator = @import("semantic_validator.zig");
 
 pub const EngineType = execution_plan.EngineType;
 pub const InputValidationPolicy = execution_plan.InputValidationPolicy;
@@ -53,6 +54,7 @@ pub const Regex = struct {
 
         var named_captures: ?std.StringArrayHashMap(usize) = null;
         try collectNamedCaptures(allocator, tree.root, &named_captures);
+        try semantic_validator.validate(tree.root, tree.capture_count, if (named_captures) |*nc| nc else null);
 
         const plan = execution_plan.build(tree.root, final_flags);
 

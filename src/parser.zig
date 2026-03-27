@@ -106,7 +106,51 @@ pub const Lexer = struct {
         };
     }
 
-    fn parseEscape(self: *Lexer) !Token {
+    fn makeTokenWithSpan(self: *Lexer, token_type: TokenType, value: u8, start: usize, end: usize) Token {
+        _ = self;
+        return .{
+            .token_type = token_type,
+            .value = value,
+            .span = common.Span.init(start, end),
+        };
+    }
+
+    fn codepointStartForCurrentPos(self: *Lexer, leading_byte: u8) usize {
+        if (leading_byte < 0x80) return self.pos - 1;
+        const len = std.unicode.utf8ByteSequenceLength(leading_byte) catch 1;
+        return self.pos - len;
+    }
+
+    fn tokenForConsumedCharWithSpan(self: *Lexer, c: u8, start: usize, end: usize) Token {
+        return switch (c) {
+            '.' => self.makeTokenWithSpan(.dot, c, start, end),
+            '*' => self.makeTokenWithSpan(.star, c, start, end),
+            '+' => self.makeTokenWithSpan(.plus, c, start, end),
+            '?' => self.makeTokenWithSpan(.question, c, start, end),
+            '|' => self.makeTokenWithSpan(.pipe, c, start, end),
+            '(' => self.makeTokenWithSpan(.lparen, c, start, end),
+            ')' => self.makeTokenWithSpan(.rparen, c, start, end),
+            '[' => self.makeTokenWithSpan(.lbracket, c, start, end),
+            ']' => self.makeTokenWithSpan(.rbracket, c, start, end),
+            '{' => self.makeTokenWithSpan(.lbrace, c, start, end),
+            '}' => self.makeTokenWithSpan(.rbrace, c, start, end),
+            '^' => self.makeTokenWithSpan(.caret, c, start, end),
+            '$' => self.makeTokenWithSpan(.dollar, c, start, end),
+            else => self.makeTokenWithSpan(.literal, c, start, end),
+        };
+    }
+
+    fn tokenForCurrentCodepoint(self: *Lexer, c: u8) Token {
+        const start = self.codepointStartForCurrentPos(c);
+        return self.tokenForConsumedCharWithSpan(c, start, self.pos);
+    }
+
+    fn literalTokenForCurrentCodepoint(self: *Lexer, c: u8) Token {
+        const start = self.codepointStartForCurrentPos(c);
+        return self.makeTokenWithSpan(.literal, c, start, self.pos);
+    }
+
+    fn parseEscape(self: *Lexer) RegexError!Token {
         // We've already consumed the backslash
         const c = self.advance() orelse return RegexError.UnexpectedEndOfPattern;
 
@@ -158,27 +202,24 @@ pub const Lexer = struct {
             'g' => return self.makeToken(.escape_g, 0),
             'k' => return self.makeToken(.escape_k, 0),
             'Q' => {
-                // Start literal sequence - treat everything as literal until \E
+                // Start literal sequence - treat everything as literal until \E.
                 self.literal_mode = true;
-                // Skip \Q by advancing past it and returning next character as literal
                 const next_c = self.advance() orelse return self.makeToken(.eof, 0);
-                return self.makeToken(.literal, next_c);
+                return self.literalTokenForCurrentCodepoint(next_c);
             },
             'E' => {
-                // \E only valid inside \Q...\E literal sequence
+                // \E only valid inside \Q...\E literal sequence.
                 if (!self.literal_mode) {
-                    // Outside literal mode, \E is just literal 'E'
+                    // Outside literal mode, \E is just literal 'E'.
                     return self.makeToken(.literal, 'E');
                 }
-                // End literal sequence
                 self.literal_mode = false;
-                // Skip \E by advancing past it and returning next character
                 const next_c = self.advance() orelse return self.makeToken(.eof, 0);
-                // Process next character normally (not in literal mode anymore)
                 if (next_c == '\\') {
+                    self.start_pos = self.pos - 1;
                     return try self.parseEscape();
                 }
-                return self.makeToken(.literal, next_c);
+                return self.tokenForCurrentCodepoint(next_c);
             },
             '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
                 // Backreference \1, \2, etc.
@@ -195,7 +236,7 @@ pub const Lexer = struct {
         };
     }
 
-    pub fn next(self: *Lexer) !Token {
+    pub fn next(self: *Lexer) RegexError!Token {
         self.start_pos = self.pos;
 
         if (self.flags.extended) {
@@ -253,25 +294,12 @@ pub const Lexer = struct {
         }
 
         return switch (c) {
-            '.' => self.makeToken(.dot, c),
-            '*' => self.makeToken(.star, c),
-            '+' => self.makeToken(.plus, c),
-            '?' => self.makeToken(.question, c),
-            '|' => self.makeToken(.pipe, c),
-            '(' => self.makeToken(.lparen, c),
-            ')' => self.makeToken(.rparen, c),
-            '[' => self.makeToken(.lbracket, c),
-            ']' => self.makeToken(.rbracket, c),
-            '{' => self.makeToken(.lbrace, c),
-            '}' => self.makeToken(.rbrace, c),
-            '^' => self.makeToken(.caret, c),
-            '$' => self.makeToken(.dollar, c),
             '\\' => try self.parseEscape(),
-            else => self.makeToken(.literal, c),
+            else => self.tokenForConsumedCharWithSpan(c, self.start_pos, self.pos),
         };
     }
 
-    fn parsePcreVerb(self: *Lexer) !Token {
+    fn parsePcreVerb(self: *Lexer) RegexError!Token {
         _ = self.advance(); // consume *
         const start = self.pos;
 
@@ -567,10 +595,10 @@ pub const Parser = struct {
 
             switch (token_type) {
                 .star, .plus, .question, .lbrace => {
-                    // Reject quantifier applied directly to a zero-width assertion or anchor.
-                    // Pattern like ^* or (?=foo)+ is invalid in PCRE.
+                    // Reject quantifier applied directly to a zero-width assertion, anchor,
+                    // or an already quantified node. Pattern like ^*, (?=foo)+, or a** is invalid in PCRE.
                     switch (node.node_type) {
-                        .anchor, .lookahead, .lookbehind, .empty => return RegexError.InvalidQuantifier,
+                        .anchor, .lookahead, .lookbehind, .empty, .star, .plus, .optional, .repeat => return RegexError.InvalidQuantifier,
                         else => {},
                     }
                 },
