@@ -427,6 +427,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_integration_hardening_tests = b.addRunArtifact(integration_hardening_tests);
 
+    const execution_session_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/execution_session.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_execution_session_tests = b.addRunArtifact(execution_session_tests);
+
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -470,6 +482,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_recursion_tests.step);
     test_step.dependOn(&run_debug_posix_tests.step);
     test_step.dependOn(&run_integration_hardening_tests.step);
+    test_step.dependOn(&run_execution_session_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;
@@ -761,4 +774,7 @@ pub fn build(b: *std.Build) void {
 
     const test_hardening_step = b.step("test-hardening", "Run integration hardening tests");
     test_hardening_step.dependOn(&run_integration_hardening_tests.step);
+
+    const test_execution_session_step = b.step("test-execution-session", "Run execution_session tests");
+    test_execution_session_step.dependOn(&run_execution_session_tests.step);
 }

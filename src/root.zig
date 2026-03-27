@@ -18,6 +18,11 @@ const std = @import("std");
 // Public API exports
 pub const Regex = @import("regex.zig").Regex;
 pub const Match = @import("regex.zig").Match;
+pub const MatchBuffer = @import("regex.zig").MatchBuffer;
+pub const MatchCapture = @import("regex.zig").MatchCapture;
+pub const ExecutionSession = @import("regex.zig").ExecutionSession;
+pub const SessionIterator = @import("regex.zig").SessionIterator;
+pub const Matcher = @import("regex.zig").Matcher;
 pub const RegexError = @import("errors.zig").RegexError;
 pub const ErrorContext = @import("errors.zig").ErrorContext;
 pub const ErrorHelper = @import("errors.zig").ErrorHelper;

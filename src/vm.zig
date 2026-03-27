@@ -4,6 +4,7 @@ const common = @import("common.zig");
 const errors = @import("errors.zig");
 const unicode = @import("unicode.zig");
 const text_policy = @import("text_policy.zig");
+const match_types = @import("match_types.zig");
 
 /// A single node in the linked-list of capture updates
 const CaptureNode = struct {
@@ -109,7 +110,33 @@ pub const BytecodeVM = struct {
         }
     }
 
+    const SearchResult = struct {
+        end: usize,
+        cap_idx: ?usize,
+    };
+
     pub fn matchAt(self: *BytecodeVM, input: []const u8, start_pos: usize, captures: ?*MatchResult) !bool {
+        const result = try self.searchMatchAt(input, start_pos, captures == null) orelse return false;
+
+        if (captures) |c| {
+            const caps = try self.allocator.alloc(MatchResult.Capture, self.prog.capture_count);
+            self.populateOwnedCaptures(input, result.cap_idx, caps);
+            c.* = .{ .start = start_pos, .end = result.end, .captures = caps };
+        }
+
+        return true;
+    }
+
+    pub fn matchAtInto(self: *BytecodeVM, input: []const u8, start_pos: usize, captures: []match_types.Capture, end_out: *usize) !bool {
+        if (captures.len != self.prog.capture_count) return errors.RegexError.InvalidArgument;
+
+        const result = try self.searchMatchAt(input, start_pos, false) orelse return false;
+        self.populateBorrowedCaptures(input, result.cap_idx, captures);
+        end_out.* = result.end;
+        return true;
+    }
+
+    fn searchMatchAt(self: *BytecodeVM, input: []const u8, start_pos: usize, stop_on_first_match: bool) !?SearchResult {
         self.current_threads.clearRetainingCapacity();
         self.next_threads.clearRetainingCapacity();
         @memset(self.visited, false);
@@ -130,13 +157,11 @@ pub const BytecodeVM = struct {
                 const inst = self.prog.instructions[thread.pc];
 
                 if (inst.op == .match) {
+                    if (stop_on_first_match) {
+                        return .{ .end = pos, .cap_idx = thread.cap_idx };
+                    }
                     best_end = pos;
                     best_cap_idx = thread.cap_idx;
-                    // For capturing match, we keep going to find LONGEST match?
-                    // Standard Thompson usually takes the FIRST match that reaches .match.
-                    // But for regex.find, we want the longest?
-                    // Actually, Thompson naturally finds all matches, and we take the last one seen if multiple match at the same 'pos'.
-                    if (captures == null) return true;
                     continue;
                 }
 
@@ -178,36 +203,61 @@ pub const BytecodeVM = struct {
         }
 
         if (best_end) |end| {
-            if (captures) |c| {
-                const caps = try self.allocator.alloc(MatchResult.Capture, self.prog.capture_count);
-                @memset(caps, .{ .start = 0, .end = 0, .text = "" });
-
-                var curr = best_cap_idx;
-                while (curr) |idx| {
-                    const node = self.capture_pool.items[idx];
-                    const group_id: usize = node.group_id / 2;
-                    const is_end = (node.group_id % 2) != 0;
-
-                    if (is_end) {
-                        caps[group_id].end = node.pos;
-                    } else {
-                        caps[group_id].start = node.pos;
-                    }
-                    curr = node.next;
-                }
-
-                for (caps) |*cap| {
-                    if (cap.end >= cap.start) {
-                        cap.text = input[cap.start..cap.end];
-                    }
-                }
-
-                c.* = .{ .start = start_pos, .end = end, .captures = caps };
-            }
-            return true;
+            return .{ .end = end, .cap_idx = best_cap_idx };
         }
 
-        return false;
+        return null;
+    }
+
+    fn populateOwnedCaptures(self: *BytecodeVM, input: []const u8, cap_idx: ?usize, captures: []MatchResult.Capture) void {
+        @memset(captures, .{ .start = 0, .end = 0, .text = "" });
+
+        var curr = cap_idx;
+        while (curr) |idx| {
+            const node = self.capture_pool.items[idx];
+            const group_id: usize = node.group_id / 2;
+            const is_end = (node.group_id % 2) != 0;
+
+            if (is_end) {
+                captures[group_id].end = node.pos;
+            } else {
+                captures[group_id].start = node.pos;
+            }
+            curr = node.next;
+        }
+
+        for (captures) |*capture| {
+            if (capture.end >= capture.start) {
+                capture.text = input[capture.start..capture.end];
+            }
+        }
+    }
+
+    fn populateBorrowedCaptures(self: *BytecodeVM, input: []const u8, cap_idx: ?usize, captures: []match_types.Capture) void {
+        for (captures) |*capture| {
+            capture.* = .{};
+        }
+
+        var curr = cap_idx;
+        while (curr) |idx| {
+            const node = self.capture_pool.items[idx];
+            const group_id: usize = node.group_id / 2;
+            const is_end = (node.group_id % 2) != 0;
+
+            if (is_end) {
+                captures[group_id].end = node.pos;
+            } else {
+                captures[group_id].start = node.pos;
+            }
+            captures[group_id].matched = true;
+            curr = node.next;
+        }
+
+        for (captures) |*capture| {
+            if (capture.end >= capture.start) {
+                capture.text = input[capture.start..capture.end];
+            }
+        }
     }
 
     fn appendCaptureNode(self: *BytecodeVM, node: CaptureNode) !usize {

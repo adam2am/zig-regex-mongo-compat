@@ -12,9 +12,12 @@ const bytecode = @import("bytecode.zig");
 const pattern_analyzer = @import("pattern_analyzer.zig");
 const execution_plan = @import("execution_plan.zig");
 const text_policy = @import("text_policy.zig");
+const match_types = @import("match_types.zig");
 
 pub const EngineType = execution_plan.EngineType;
 pub const InputValidationPolicy = execution_plan.InputValidationPolicy;
+pub const MatchBuffer = match_types.MatchBuffer;
+pub const MatchCapture = match_types.Capture;
 
 /// Main regex type - represents a compiled regular expression pattern.
 pub const Regex = struct {
@@ -105,8 +108,17 @@ pub const Regex = struct {
         }
     }
 
+    pub fn session(self: *const Regex, allocator: std.mem.Allocator) !ExecutionSession {
+        return ExecutionSession.init(allocator, self);
+    }
+
+    pub fn matchBuffer(self: *const Regex, allocator: std.mem.Allocator) !MatchBuffer {
+        return MatchBuffer.init(allocator, self.capture_count);
+    }
+
+    /// Compatibility wrapper for the older Matcher API. Prefer `session()` in new code.
     pub fn matcher(self: *const Regex, allocator: std.mem.Allocator) !Matcher {
-        return Matcher.init(allocator, self);
+        return self.session(allocator);
     }
 
     pub fn iterator(self: *const Regex, input: []const u8) MatchIterator {
@@ -124,21 +136,24 @@ pub const Regex = struct {
     }
 
     pub fn isMatch(self: *const Regex, input: []const u8) !bool {
-        try self.validateInput(input);
-        var compiled_matcher = try self.matcher(self.allocator);
-        defer compiled_matcher.deinit();
-        return compiled_matcher.isMatch(input);
+        var runtime = try Regex.session(self, self.allocator);
+        defer runtime.deinit();
+        return runtime.isMatch(input);
     }
 
     pub fn find(self: *const Regex, input: []const u8) !?Match {
-        try self.validateInput(input);
-        var compiled_matcher = try self.matcher(self.allocator);
-        defer compiled_matcher.deinit();
-        return compiled_matcher.find(input);
+        var runtime = try Regex.session(self, self.allocator);
+        defer runtime.deinit();
+        return runtime.find(input);
+    }
+
+    pub fn findInto(self: *const Regex, input: []const u8, buffer: *MatchBuffer) !bool {
+        var runtime = try Regex.session(self, self.allocator);
+        defer runtime.deinit();
+        return runtime.findInto(input, buffer);
     }
 
     pub fn findAll(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![]Match {
-        try self.validateInput(input);
         return findAllImpl(self, allocator, input);
     }
 
@@ -174,6 +189,8 @@ pub const Match = struct {
     }
 };
 
+/// Simple allocating iterator for backwards-compatible call sites.
+/// For high-throughput loops, prefer `ExecutionSession.iterator(...).nextInto(...)`.
 pub const MatchIterator = struct {
     regex: *const Regex,
     input: []const u8,
@@ -198,10 +215,10 @@ pub const MatchIterator = struct {
     pub fn next(self: *MatchIterator, allocator: std.mem.Allocator) !?Match {
         if (self.pos > self.input.len) return null;
 
-        var matcher = try self.regex.matcher(allocator);
-        defer matcher.deinit();
+        var session = try self.regex.session(allocator);
+        defer session.deinit();
 
-        if (try matcher.find(self.input[self.pos..])) |match| {
+        if (try session.find(self.input[self.pos..])) |match| {
             var corrected = match;
             corrected.start += self.pos;
             corrected.end += self.pos;
@@ -213,7 +230,60 @@ pub const MatchIterator = struct {
     }
 };
 
-pub const Matcher = struct {
+pub const SessionIterator = struct {
+    session: *ExecutionSession,
+    input: []const u8,
+    pos: usize,
+    validated: bool,
+
+    pub fn init(session: *ExecutionSession, input: []const u8) SessionIterator {
+        return .{
+            .session = session,
+            .input = input,
+            .pos = 0,
+            .validated = false,
+        };
+    }
+
+    pub fn reset(self: *SessionIterator) void {
+        self.pos = 0;
+        self.validated = false;
+    }
+
+    pub fn nextInto(self: *SessionIterator, buffer: *MatchBuffer) !bool {
+        if (!self.validated) {
+            try self.session.regex.validateInput(self.input);
+            self.validated = true;
+        }
+
+        if (self.pos > self.input.len) {
+            buffer.reset();
+            return false;
+        }
+
+        if (try self.session.findIntoAssumeValid(self.input[self.pos..], buffer)) {
+            buffer.start += self.pos;
+            buffer.end += self.pos;
+            buffer.slice = self.input[buffer.start..buffer.end];
+            self.pos = if (buffer.end > buffer.start) buffer.end else advanceInputPosition(self.input, buffer.start);
+            return true;
+        }
+
+        buffer.reset();
+        self.pos = self.input.len + 1;
+        return false;
+    }
+
+    pub fn next(self: *SessionIterator, allocator: std.mem.Allocator) !?Match {
+        var buffer = try self.session.regex.matchBuffer(allocator);
+        defer buffer.deinit();
+
+        if (!(try self.nextInto(&buffer))) return null;
+        return try materializeMatchFromBuffer(allocator, &buffer);
+    }
+};
+
+pub const ExecutionSession = struct {
     regex: *const Regex,
     allocator: std.mem.Allocator,
     engine: union(enum) {
@@ -221,7 +291,7 @@ pub const Matcher = struct {
         backtrack: backtrack.BacktrackEngine,
     },
 
-    pub fn init(allocator: std.mem.Allocator, regex: *const Regex) !Matcher {
+    pub fn init(allocator: std.mem.Allocator, regex: *const Regex) !ExecutionSession {
         return switch (regex.engine_type) {
             .thompson_nfa => .{
                 .regex = regex,
@@ -236,14 +306,26 @@ pub const Matcher = struct {
         };
     }
 
-    pub fn deinit(self: *Matcher) void {
+    pub fn deinit(self: *ExecutionSession) void {
         switch (self.engine) {
             .nfa => |*e| e.deinit(),
             .backtrack => |*e| e.deinit(),
         }
     }
 
-    pub fn isMatch(self: *Matcher, input: []const u8) !bool {
+    pub fn setMaxSteps(self: *ExecutionSession, max_steps: usize) void {
+        switch (self.engine) {
+            .nfa => {},
+            .backtrack => |*engine| engine.max_steps = max_steps,
+        }
+    }
+
+    pub fn iterator(self: *ExecutionSession, input: []const u8) SessionIterator {
+        return SessionIterator.init(self, input);
+    }
+
+    pub fn isMatch(self: *ExecutionSession, input: []const u8) !bool {
+        try self.regex.validateInput(input);
         return switch (self.engine) {
             .nfa => |*e| blk: {
                 var search_pos: usize = 0;
@@ -260,29 +342,31 @@ pub const Matcher = struct {
         };
     }
 
-    pub fn find(self: *Matcher, input: []const u8) !?Match {
-        // Optimization: Literal prefix scan
-        if (self.regex.engine_type == .thompson_nfa and !self.regex.flags.case_insensitive) {
-            if (self.regex.opt_info.literal_prefix) |prefix| {
-                if (prefix.len > 0 and prefix[0] < 128) {
-                    const first: u8 = @intCast(prefix[0]);
-                    var search_pos: usize = 0;
-                    while (std.mem.indexOfScalar(u8, input[search_pos..], first)) |rel| {
-                        const abs = search_pos + rel;
-                        var res: vm.MatchResult = undefined;
-                        if (try self.engine.nfa.matchAt(input, abs, &res)) {
-                            defer res.deinit(self.allocator);
-                            return try self.buildMatch(input, abs, res.end, res.captures);
-                        }
-                        search_pos = abs + 1;
-                    }
-                    return null;
-                }
-            }
-        }
+    pub fn find(self: *ExecutionSession, input: []const u8) !?Match {
+        try self.regex.validateInput(input);
 
         return switch (self.engine) {
             .nfa => |*e| blk: {
+                // Optimization: Literal prefix scan
+                if (!self.regex.flags.case_insensitive) {
+                    if (self.regex.opt_info.literal_prefix) |prefix| {
+                        if (prefix.len > 0 and prefix[0] < 128) {
+                            const first: u8 = @intCast(prefix[0]);
+                            var search_pos: usize = 0;
+                            while (std.mem.indexOfScalar(u8, input[search_pos..], first)) |rel| {
+                                const abs = search_pos + rel;
+                                var res: vm.MatchResult = undefined;
+                                if (try e.matchAt(input, abs, &res)) {
+                                    defer res.deinit(self.allocator);
+                                    break :blk try self.buildMatch(input, abs, res.end, res.captures);
+                                }
+                                search_pos = abs + 1;
+                            }
+                            break :blk null;
+                        }
+                    }
+                }
+
                 var search_pos: usize = 0;
                 while (search_pos <= input.len) {
                     var res: vm.MatchResult = undefined;
@@ -303,18 +387,86 @@ pub const Matcher = struct {
         };
     }
 
-    fn buildMatch(self: *Matcher, input: []const u8, start: usize, end: usize, nfa_caps: []const vm.MatchResult.Capture) !Match {
+    pub fn findInto(self: *ExecutionSession, input: []const u8, buffer: *MatchBuffer) !bool {
+        try self.regex.validateInput(input);
+        return self.findIntoAssumeValid(input, buffer);
+    }
+
+    fn findIntoAssumeValid(self: *ExecutionSession, input: []const u8, buffer: *MatchBuffer) !bool {
+        if (buffer.captures.len != self.regex.capture_count) return RegexError.InvalidArgument;
+
+        buffer.reset();
+
+        return switch (self.engine) {
+            .nfa => |*e| blk: {
+                // Optimization: Literal prefix scan
+                if (!self.regex.flags.case_insensitive) {
+                    if (self.regex.opt_info.literal_prefix) |prefix| {
+                        if (prefix.len > 0 and prefix[0] < 128) {
+                            const first: u8 = @intCast(prefix[0]);
+                            var search_pos: usize = 0;
+                            while (std.mem.indexOfScalar(u8, input[search_pos..], first)) |rel| {
+                                const abs = search_pos + rel;
+                                var end_pos: usize = undefined;
+                                if (try e.matchAtInto(input, abs, buffer.captures, &end_pos)) {
+                                    buffer.start = abs;
+                                    buffer.end = end_pos;
+                                    buffer.slice = input[abs..end_pos];
+                                    buffer.matched = true;
+                                    break :blk true;
+                                }
+                                search_pos = abs + 1;
+                            }
+                            break :blk false;
+                        }
+                    }
+                }
+
+                var search_pos: usize = 0;
+                while (search_pos <= input.len) {
+                    var end_pos: usize = undefined;
+                    if (try e.matchAtInto(input, search_pos, buffer.captures, &end_pos)) {
+                        buffer.start = search_pos;
+                        buffer.end = end_pos;
+                        buffer.slice = input[search_pos..end_pos];
+                        buffer.matched = true;
+                        break :blk true;
+                    }
+                    if (search_pos >= input.len) break;
+                    search_pos += (unicode.decodeUtf8(input[search_pos..]) catch break).len;
+                }
+                break :blk false;
+            },
+            .backtrack => |*e| blk: {
+                var start_pos: usize = undefined;
+                var end_pos: usize = undefined;
+                if (try e.findInto(input, buffer.captures, &start_pos, &end_pos)) {
+                    buffer.start = start_pos;
+                    buffer.end = end_pos;
+                    buffer.slice = input[start_pos..end_pos];
+                    buffer.matched = true;
+                    break :blk true;
+                }
+                break :blk false;
+            },
+        };
+    }
+
+    fn buildMatch(self: *ExecutionSession, input: []const u8, start: usize, end: usize, nfa_caps: []const vm.MatchResult.Capture) !Match {
         const captures = try self.allocator.alloc([]const u8, self.regex.capture_count);
         for (nfa_caps, 0..) |c, i| captures[i] = c.text;
         return Match{ .slice = input[start..end], .start = start, .end = end, .captures = captures };
     }
 
-    fn buildBacktrackMatch(self: *Matcher, input: []const u8, res: backtrack.BacktrackMatch) !Match {
+    fn buildBacktrackMatch(self: *ExecutionSession, input: []const u8, res: backtrack.BacktrackMatch) !Match {
         const captures = try self.allocator.alloc([]const u8, self.regex.capture_count);
         for (res.captures, 0..) |c, i| captures[i] = if (c.matched) input[c.start..c.end] else "";
         return Match{ .slice = input[res.start..res.end], .start = res.start, .end = res.end, .captures = captures };
     }
 };
+
+/// Compatibility alias. Prefer `ExecutionSession` in new code.
+pub const Matcher = ExecutionSession;
 
 fn collectNamedCaptures(allocator: std.mem.Allocator, node: *ast.Node, map: *?std.StringArrayHashMap(usize)) !void {
     switch (node.node_type) {
@@ -349,56 +501,137 @@ fn collectNamedCaptures(allocator: std.mem.Allocator, node: *ast.Node, map: *?st
 }
 
 fn replaceImpl(self: *const Regex, allocator: std.mem.Allocator, input: []const u8, replacement: []const u8) ![]u8 {
-    const match = (try self.find(input)) orelse return try allocator.dupe(u8, input);
-    defer match.deinit(allocator);
-    const expanded = try expandReplacement(allocator, replacement, match.captures, match.slice);
-    defer allocator.free(expanded);
-    return try std.mem.concat(allocator, u8, &[_][]const u8{ input[0..match.start], expanded, input[match.end..] });
+    try self.validateInput(input);
+
+    var session = try self.session(allocator);
+    defer session.deinit();
+
+    var buffer = try self.matchBuffer(allocator);
+    defer buffer.deinit();
+
+    if (!(try session.findIntoAssumeValid(input, &buffer))) {
+        return try allocator.dupe(u8, input);
+    }
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, input[0..buffer.start]);
+    try appendExpandedReplacementFromBuffer(&result, allocator, replacement, buffer.captures, buffer.slice);
+    try result.appendSlice(allocator, input[buffer.end..]);
+    return result.toOwnedSlice(allocator);
 }
 
 fn replaceAllImpl(self: *const Regex, allocator: std.mem.Allocator, input: []const u8, replacement: []const u8) ![]u8 {
-    const matches = try self.findAll(allocator, input);
-    defer {
-        for (matches) |m| m.deinit(allocator);
-        allocator.free(matches);
-    }
-    if (matches.len == 0) return try allocator.dupe(u8, input);
+    try self.validateInput(input);
+
+    var session = try self.session(allocator);
+    defer session.deinit();
+
+    var buffer = try self.matchBuffer(allocator);
+    defer buffer.deinit();
+
     var result: std.ArrayList(u8) = .empty;
-    defer result.deinit(allocator);
+    errdefer result.deinit(allocator);
+
+    var pos: usize = 0;
     var last: usize = 0;
-    for (matches) |m| {
-        try result.appendSlice(allocator, input[last..m.start]);
-        const expanded = try expandReplacement(allocator, replacement, m.captures, m.slice);
-        defer allocator.free(expanded);
-        try result.appendSlice(allocator, expanded);
-        last = m.end;
+    var matched_any = false;
+    while (pos <= input.len) {
+        if (try session.findIntoAssumeValid(input[pos..], &buffer)) {
+            buffer.start += pos;
+            buffer.end += pos;
+            buffer.slice = input[buffer.start..buffer.end];
+
+            matched_any = true;
+            try result.appendSlice(allocator, input[last..buffer.start]);
+            try appendExpandedReplacementFromBuffer(&result, allocator, replacement, buffer.captures, buffer.slice);
+            last = buffer.end;
+            pos = if (buffer.end > buffer.start) buffer.end else advanceInputPosition(input, buffer.start);
+            continue;
+        }
+        break;
     }
+
+    if (!matched_any) {
+        return try allocator.dupe(u8, input);
+    }
+
     try result.appendSlice(allocator, input[last..]);
     return result.toOwnedSlice(allocator);
 }
 
 fn findAllImpl(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![]Match {
+    try self.validateInput(input);
+
     var list: std.ArrayList(Match) = .empty;
     defer list.deinit(allocator);
-    var iter = self.iterator(input);
-    defer iter.deinit();
-    while (try iter.next(allocator)) |m| try list.append(allocator, m);
+
+    var session = try self.session(allocator);
+    defer session.deinit();
+
+    var buffer = try self.matchBuffer(allocator);
+    defer buffer.deinit();
+
+    var pos: usize = 0;
+    while (pos <= input.len) {
+        if (try session.findIntoAssumeValid(input[pos..], &buffer)) {
+            buffer.start += pos;
+            buffer.end += pos;
+            buffer.slice = input[buffer.start..buffer.end];
+
+            const next_pos = if (buffer.end > buffer.start) buffer.end else advanceInputPosition(input, buffer.start);
+            try list.append(allocator, try materializeMatchFromBuffer(allocator, &buffer));
+            pos = next_pos;
+            continue;
+        }
+        break;
+    }
+
     return list.toOwnedSlice(allocator);
 }
 
+fn materializeMatchFromBuffer(allocator: std.mem.Allocator, buffer: *const MatchBuffer) !Match {
+    const captures = try allocator.alloc([]const u8, buffer.captures.len);
+    for (buffer.captures, 0..) |capture, i| {
+        captures[i] = capture.text;
+    }
+    return .{
+        .slice = buffer.slice,
+        .start = buffer.start,
+        .end = buffer.end,
+        .captures = captures,
+    };
+}
+
 fn splitImpl(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![][]const u8 {
-    const matches = try self.findAll(allocator, input);
-    defer {
-        for (matches) |m| m.deinit(allocator);
-        allocator.free(matches);
-    }
+    try self.validateInput(input);
+
+    var session = try self.session(allocator);
+    defer session.deinit();
+
+    var buffer = try self.matchBuffer(allocator);
+    defer buffer.deinit();
+
     var parts: std.ArrayList([]const u8) = .empty;
-    defer parts.deinit(allocator);
+    errdefer parts.deinit(allocator);
+
+    var pos: usize = 0;
     var last: usize = 0;
-    for (matches) |m| {
-        try parts.append(allocator, input[last..m.start]);
-        last = m.end;
+    while (pos <= input.len) {
+        if (try session.findIntoAssumeValid(input[pos..], &buffer)) {
+            buffer.start += pos;
+            buffer.end += pos;
+            buffer.slice = input[buffer.start..buffer.end];
+
+            try parts.append(allocator, input[last..buffer.start]);
+            last = buffer.end;
+            pos = if (buffer.end > buffer.start) buffer.end else advanceInputPosition(input, buffer.start);
+            continue;
+        }
+        break;
     }
+
     try parts.append(allocator, input[last..]);
     return parts.toOwnedSlice(allocator);
 }
@@ -412,10 +645,7 @@ fn isAsciiDigit(byte: u8) bool {
     return byte >= '0' and byte <= '9';
 }
 
-fn expandReplacement(allocator: std.mem.Allocator, replacement: []const u8, captures: []const []const u8, match_slice: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
+fn appendExpandedReplacementFromBuffer(result: *std.ArrayList(u8), allocator: std.mem.Allocator, replacement: []const u8, captures: []const MatchCapture, match_slice: []const u8) !void {
     var i: usize = 0;
     while (i < replacement.len) {
         if (replacement[i] == '$') {
@@ -438,7 +668,7 @@ fn expandReplacement(allocator: std.mem.Allocator, replacement: []const u8, capt
                     i += 1;
                 }
                 if (group_idx > 0 and group_idx <= captures.len) {
-                    try result.appendSlice(allocator, captures[group_idx - 1]);
+                    try result.appendSlice(allocator, captures[group_idx - 1].text);
                 } else {
                     try result.append(allocator, '$');
                     const digits = try std.fmt.allocPrint(allocator, "{d}", .{group_idx});
@@ -453,5 +683,4 @@ fn expandReplacement(allocator: std.mem.Allocator, replacement: []const u8, capt
             i += 1;
         }
     }
-    return result.toOwnedSlice(allocator);
 }

@@ -6,6 +6,7 @@ const unicode = @import("unicode.zig");
 const unicode_tables = @import("unicode_tables.zig");
 const vm = @import("vm.zig");
 const text_policy = @import("text_policy.zig");
+const match_types = @import("match_types.zig");
 
 /// Backtracking-based regex engine
 /// Supports: lazy quantifiers, lookahead/lookbehind, backreferences
@@ -240,48 +241,68 @@ pub const BacktrackEngine = struct {
         return result_pos;
     }
 
+    const MatchSpan = struct {
+        start: usize,
+        end: usize,
+    };
+
     /// Test if pattern matches entire input
     pub fn isMatch(self: *BacktrackEngine, input: []const u8) !bool {
-        if (try self.find(input)) |match| {
-            self.allocator.free(match.captures);
-            return true;
-        }
-        return false;
+        return (try self.search(input)) != null;
     }
 
     /// Find first match in input
     pub fn find(self: *BacktrackEngine, input: []const u8) !?BacktrackMatch {
+        const span = (try self.search(input)) orelse return null;
+
+        const captures = self.allocator.alloc(BacktrackMatch.CaptureGroup, self.captures.len) catch return null;
+        for (self.captures, 0..) |cap, i| {
+            captures[i] = .{
+                .start = cap.start,
+                .end = cap.end,
+                .matched = cap.matched,
+            };
+        }
+
+        return BacktrackMatch{
+            .start = span.start,
+            .end = span.end,
+            .captures = captures,
+        };
+    }
+
+    pub fn findInto(self: *BacktrackEngine, input: []const u8, captures: []match_types.Capture, start_out: *usize, end_out: *usize) !bool {
+        if (captures.len != self.captures.len) return errors.RegexError.InvalidArgument;
+
+        const span = (try self.search(input)) orelse return false;
+        for (captures, 0..) |*capture, i| {
+            const source = self.captures[i];
+            capture.* = .{
+                .start = source.start,
+                .end = source.end,
+                .matched = source.matched,
+                .text = if (source.matched) input[source.start..source.end] else "",
+            };
+        }
+        start_out.* = span.start;
+        end_out.* = span.end;
+        return true;
+    }
+
+    fn search(self: *BacktrackEngine, input: []const u8) !?MatchSpan {
         self.input = input;
-        self.aborted = false; // Reset abort for new search attempt
-        // REMOVED: This flag broke lazy quantifiers by preventing expansion
-        // Lazy quantifiers need backtracking to work correctly
-        // self.disable_lazy_backtrack = true;
-        // defer self.disable_lazy_backtrack = false;
+        self.aborted = false;
 
         var pos: usize = 0;
         while (pos <= input.len) : (pos += 1) {
-            if (self.aborted) return errors.RegexError.Timeout; // Hard break if previous start position hit ReDoS limits
+            if (self.aborted) return errors.RegexError.Timeout;
             self.resetCaptures();
-            self.state_stack.shrinkRetainingCapacity(0); // Clear state stack to prevent memory leaks
-            self.match_state_stack.shrinkRetainingCapacity(0); // Clear match state stack
-            self.step_count = 0; // Reset step counter per starting position
+            self.state_stack.shrinkRetainingCapacity(0);
+            self.match_state_stack.shrinkRetainingCapacity(0);
+            self.step_count = 0;
             if (self.matchNode(self.ast_root, pos)) |end_pos| {
                 if (end_pos > pos or (end_pos == pos and self.canMatchEmpty(self.ast_root))) {
-                    // Found a match
-                    const captures = self.allocator.alloc(BacktrackMatch.CaptureGroup, self.captures.len) catch return null;
-                    for (self.captures, 0..) |cap, i| {
-                        captures[i] = .{
-                            .start = cap.start,
-                            .end = cap.end,
-                            .matched = cap.matched,
-                        };
-                    }
-
-                    return BacktrackMatch{
-                        .start = pos,
-                        .end = end_pos,
-                        .captures = captures,
-                    };
+                    return .{ .start = pos, .end = end_pos };
                 }
             }
             if (self.aborted) return errors.RegexError.Timeout;
