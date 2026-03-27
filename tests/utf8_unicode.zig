@@ -237,3 +237,51 @@ test "UTF-8: known limitation - \\w is ASCII-only" {
         try std.testing.expectEqualStrings("caf", match.slice);
     }
 }
+
+// --- Strict UTF-8 Validation Edge Cases ---
+
+test "UTF-8: invalid byte sequence errors gracefully" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, ".*");
+    defer regex.deinit();
+
+    // \xff\xfe is invalid UTF-8
+    const invalid_str = "\xff\xfe";
+    const result = regex.isMatch(invalid_str);
+    try std.testing.expectError(error.InvalidUtf8, result);
+}
+
+test "UTF-8: invalid half-surrogate errors gracefully" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, ".*");
+    defer regex.deinit();
+
+    // \xED\xA0\x80 is the UTF-8 encoding of U+D800 (a lone surrogate, invalid in UTF-8)
+    const invalid_surrogate = "\xED\xA0\x80";
+    const result = regex.isMatch(invalid_surrogate);
+    try std.testing.expectError(error.InvalidUtf8, result);
+}
+
+test "UTF-8: case insensitive with Unicode Ü" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "(?i)ü");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("ü"));
+    try std.testing.expect(try regex.isMatch("Ü"));
+}
+
+test "UTF-8: case insensitive Turkish I folding" {
+    const allocator = std.testing.allocator;
+    // İ (U+0130) should fold to 'i'
+    var regex = try Regex.compile(allocator, "(?i)\u{0130}");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("i"));
+}
+
+test "UTF-8: case insensitive Kelvin sign folding" {
+    const allocator = std.testing.allocator;
+    // K (Kelvin, U+212A) should fold to 'k'
+    var regex = try Regex.compile(allocator, "(?i)\u{212A}");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("k"));
+}

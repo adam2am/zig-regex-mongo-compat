@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const common = @import("common.zig");
+const unicode = @import("unicode.zig");
 const unicode_tables = @import("unicode_tables.zig");
 const vm = @import("vm.zig");
 
@@ -349,7 +350,10 @@ pub const BacktrackEngine = struct {
                     },
                     .end_line => {
                         if (pos == self.input.len) break :blk pos;
-                        if (anchor_data.multiline and pos < self.input.len and self.input[pos] == '\n') break :blk pos;
+                        if (anchor_data.multiline) {
+                            if (pos < self.input.len and self.input[pos] == '\n') break :blk pos;
+                            if (pos < self.input.len and self.input[pos] == '\r' and pos + 1 < self.input.len and self.input[pos + 1] == '\n') break :blk pos;
+                        }
                         break :blk null;
                     },
                     .start_text => if (pos == 0) pos else null,
@@ -392,20 +396,11 @@ pub const BacktrackEngine = struct {
         const input_char = utf8_char.codepoint;
 
         const matches = if (ignore_case)
-            toLower(input_char) == toLower(c)
+            unicode.toLower(input_char) == unicode.toLower(c)
         else
             input_char == c;
 
         return if (matches) pos + utf8_char.len else null;
-    }
-
-    fn toLower(c: common.Char) common.Char {
-        // ASCII fast path
-        if (c >= 'A' and c <= 'Z') {
-            return c + ('a' - 'A');
-        }
-        // TODO: Unicode case folding for non-ASCII characters
-        return c;
     }
 
     fn matchAny(self: *BacktrackEngine, any_data: ast.Node.NodeData, pos: usize) ?usize {

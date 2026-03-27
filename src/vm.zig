@@ -1,6 +1,8 @@
 const std = @import("std");
 const compiler = @import("compiler.zig");
 const common = @import("common.zig");
+const errors = @import("errors.zig");
+const unicode = @import("unicode.zig");
 const unicode_tables = @import("unicode_tables.zig");
 
 /// Capture information for a matched group
@@ -76,18 +78,8 @@ pub const VM = struct {
             return pattern_char == input_char;
         }
 
-        // Convert both to lowercase for comparison (ASCII only for now)
-        const p_lower = if (pattern_char >= 'A' and pattern_char <= 'Z')
-            pattern_char + ('a' - 'A')
-        else
-            pattern_char;
-
-        const i_lower = if (input_char >= 'A' and input_char <= 'Z')
-            input_char + ('a' - 'A')
-        else
-            input_char;
-
-        return p_lower == i_lower;
+        if (pattern_char == input_char) return true;
+        return unicode.toLower(pattern_char) == unicode.toLower(input_char);
     }
 
     /// Check if the pattern matches at a specific position in the input
@@ -174,9 +166,8 @@ pub const VM = struct {
 
             // Decode UTF-8 character at current position
             const utf8_char = decodeUtf8ForwardWithLen(input, pos) orelse {
-                // Invalid UTF-8, skip this byte
-                pos += 1;
-                continue;
+                // Invalid UTF-8: return error instead of silently skipping
+                return errors.RegexError.InvalidUtf8;
             };
             const c = utf8_char.codepoint;
             const utf8_len = utf8_char.len;
@@ -251,7 +242,9 @@ pub const VM = struct {
 
             // Advance to next UTF-8 codepoint
             if (pos < input.len) {
-                const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch 1;
+                const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch {
+                    return errors.RegexError.InvalidUtf8;
+                };
                 pos += len;
             } else {
                 break;
@@ -334,7 +327,9 @@ pub const VM = struct {
                         else
                             pos == 0,
                         .end_line => if (anchor_data.multiline)
-                            pos == input.len or (pos < input.len and input[pos] == '\n')
+                            pos == input.len or
+                                (pos < input.len and input[pos] == '\n') or
+                                (pos < input.len and input[pos] == '\r' and pos + 1 < input.len and input[pos + 1] == '\n')
                         else
                             pos == input.len,
                         .start_text => pos == 0,

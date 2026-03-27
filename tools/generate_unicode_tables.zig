@@ -62,6 +62,7 @@ const UcdRecord = struct {
     category: GeneralCategory,
     script: u8,
     grapheme: GraphemeBreakProperty,
+    lowercase_delta: i32,
 };
 
 const LookupTables = struct {
@@ -175,16 +176,29 @@ fn parseUnicodeData(allocator: std.mem.Allocator, data: []const u8, records: *st
         const codepoint_str = fields.next() orelse continue;
         const codepoint = try std.fmt.parseInt(u21, codepoint_str, 16);
 
-        _ = fields.next(); // Skip name
+        var field_idx: usize = 1;
+        var category: GeneralCategory = .Cn;
+        var lowercase_mapping: u21 = codepoint;
 
-        const category_str = fields.next() orelse continue;
-        const category = parseCategoryString(category_str) orelse .Cn;
+        while (fields.next()) |field| : (field_idx += 1) {
+            if (field_idx == 2) {
+                category = parseCategoryString(field) orelse .Cn;
+            } else if (field_idx == 13) {
+                // Field 13 is Simple_Lowercase_Mapping
+                if (field.len > 0) {
+                    lowercase_mapping = std.fmt.parseInt(u21, field, 16) catch codepoint;
+                }
+            }
+        }
+
+        const delta: i32 = @as(i32, @intCast(lowercase_mapping)) - @as(i32, @intCast(codepoint));
 
         try records.append(allocator, .{
             .codepoint = codepoint,
             .category = category,
             .script = 0, // Will be filled from Scripts.txt
             .grapheme = .gbOther, // Will be filled from GraphemeBreakProperty.txt
+            .lowercase_delta = delta,
         });
     }
 }
@@ -327,8 +341,10 @@ test "parseUnicodeData basic" {
     try testing.expectEqual(@as(usize, 2), records.items.len);
     try testing.expectEqual(@as(u21, 0x0041), records.items[0].codepoint);
     try testing.expectEqual(GeneralCategory.Lu, records.items[0].category);
+    try testing.expectEqual(@as(i32, 0x20), records.items[0].lowercase_delta); // A -> a
     try testing.expectEqual(@as(u21, 0x0061), records.items[1].codepoint);
     try testing.expectEqual(GeneralCategory.Ll, records.items[1].category);
+    try testing.expectEqual(@as(i32, 0), records.items[1].lowercase_delta); // a -> a
 }
 
 fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord, graphemes: []const GraphemeBreakProperty) !LookupTables {
@@ -346,7 +362,7 @@ fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord, g
     defer unique_records.deinit(allocator);
 
     // Add default record (Cn)
-    try unique_records.append(allocator, .{ .codepoint = 0, .category = .Cn, .script = 0, .grapheme = .gbOther });
+    try unique_records.append(allocator, .{ .codepoint = 0, .category = .Cn, .script = 0, .grapheme = .gbOther, .lowercase_delta = 0 });
 
     // Map each codepoint to a record index
     for (records) |base_record| {
@@ -358,7 +374,11 @@ fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord, g
         // Find or add record
         var record_idx: u16 = 0;
         for (unique_records.items, 0..) |existing, idx| {
-            if (existing.category == record.category and existing.script == record.script and existing.grapheme == record.grapheme) {
+            if (existing.category == record.category and
+                existing.script == record.script and
+                existing.grapheme == record.grapheme and
+                existing.lowercase_delta == record.lowercase_delta)
+            {
                 record_idx = @intCast(idx);
                 break;
             }
@@ -462,6 +482,7 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
     try content.appendSlice(allocator, "    category: u8,\n");
     try content.appendSlice(allocator, "    script: u8,\n");
     try content.appendSlice(allocator, "    grapheme: u8,\n");
+    try content.appendSlice(allocator, "    lowercase_delta: i32,\n");
     try content.appendSlice(allocator, "};\n\n");
 
     // Write stage1
@@ -489,10 +510,11 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
     // Write records
     try content.appendSlice(allocator, "pub const UCD_RECORDS = [_]UcdRecord{\n");
     for (tables.records) |record| {
-        const record_str = try std.fmt.allocPrint(allocator, "    .{{ .category = {d}, .script = {d}, .grapheme = {d} }},\n", .{
+        const record_str = try std.fmt.allocPrint(allocator, "    .{{ .category = {d}, .script = {d}, .grapheme = {d}, .lowercase_delta = {d} }},\n", .{
             @intFromEnum(record.category),
             record.script,
             @intFromEnum(record.grapheme),
+            record.lowercase_delta,
         });
         defer allocator.free(record_str);
         try content.appendSlice(allocator, record_str);

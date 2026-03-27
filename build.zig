@@ -736,4 +736,13 @@ pub fn build(b: *std.Build) void {
 
     const test_backreferences_step = b.step("test-backreferences", "Run backreferences tests");
     test_backreferences_step.dependOn(&run_backreferences_tests.step);
+
+    const test_utf8_unicode_step = b.step("test-utf8-unicode", "Run utf8_unicode tests");
+    test_utf8_unicode_step.dependOn(&run_utf8_unicode_tests.step);
+
+    const test_multiline_dotall_step = b.step("test-multiline-dotall", "Run multiline_dotall tests");
+    test_multiline_dotall_step.dependOn(&run_multiline_dotall_tests.step);
+
+    const test_parser_edge_cases_step = b.step("test-parser-edge-cases", "Run parser_compiler_edge_cases tests");
+    test_parser_edge_cases_step.dependOn(&run_parser_compiler_edge_cases_tests.step);
 }

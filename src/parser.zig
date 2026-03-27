@@ -233,6 +233,25 @@ pub const Lexer = struct {
             return try self.parsePcreVerb();
         }
 
+        // Parse PCRE inline comments: (?#...)
+        // Must check BEFORE the switch to handle at the lexer level (transparent to parser)
+        if (c == '(' and self.peek() == '?') {
+            // peek one more character ahead
+            const next_pos = self.pos + 1;
+            if (next_pos < self.input.len and self.input[next_pos] == '#') {
+                self.pos += 2; // skip past '?' and '#'
+                // consume until ')'
+                while (self.pos < self.input.len) : (self.pos += 1) {
+                    if (self.input[self.pos] == ')') {
+                        self.pos += 1; // consume ')'
+                        break;
+                    }
+                }
+                // tail-recurse: return the NEXT real token
+                return self.next();
+            }
+        }
+
         return switch (c) {
             '.' => self.makeToken(.dot, c),
             '*' => self.makeToken(.star, c),
@@ -320,8 +339,9 @@ pub const Parser = struct {
     open_groups: std.ArrayList(usize), // Stack of currently open capturing groups
     state: ParserState = .parsing,
 
-    /// Maximum nesting depth to prevent stack overflow from patterns like (((((...
-    pub const MAX_NESTING_DEPTH: usize = 100;
+    /// Maximum nesting depth increased to 255 to allow deep but bounded patterns
+    /// (PCRE2 uses 250; we use 255 for compatibility)
+    pub const MAX_NESTING_DEPTH: usize = 255;
 
     /// Maximum recursion depth to prevent stack overflow on large patterns
     /// Matches documentdb-main's PCRE2_RECURSION_LIMIT
@@ -544,6 +564,18 @@ pub const Parser = struct {
         while (true) {
             const token_type = self.peek();
             const span = common.Span.init(start, self.current_token.span.end);
+
+            switch (token_type) {
+                .star, .plus, .question, .lbrace => {
+                    // Reject quantifier applied directly to a zero-width assertion or anchor.
+                    // Pattern like ^* or (?=foo)+ is invalid in PCRE.
+                    switch (node.node_type) {
+                        .anchor, .lookahead, .lookbehind, .empty => return RegexError.InvalidQuantifier,
+                        else => {},
+                    }
+                },
+                else => {},
+            }
 
             switch (token_type) {
                 .star => {
@@ -1543,6 +1575,12 @@ pub const Parser = struct {
 
         var unicode_property: ?common.CharClass.UnicodeProperty = null;
 
+        // PCRE rule: if ] is the first character after [ (or [^), it is literal ]
+        if (self.peek() == .rbracket) {
+            try ranges.append(self.astAllocator(), common.CharRange.init(']', ']'));
+            try self.advance();
+        }
+
         while (self.peek() != .rbracket and self.peek() != .eof) {
             // Check for POSIX character class [:name:]
             // Check if current token is '[' followed by ':'
@@ -1583,6 +1621,9 @@ pub const Parser = struct {
 
                     if (found_posix) {
                         continue;
+                    } else {
+                        // Started like a POSIX class but did not find the closing :]
+                        return RegexError.InvalidCharacterClass;
                     }
                 }
             }
@@ -1759,12 +1800,12 @@ test "parser: nesting depth limit" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Create a pattern with 101 levels of nesting (exceeds MAX_NESTING_DEPTH of 100)
-    var pattern_buf: [300]u8 = undefined;
+    // Create a pattern with 256 levels of nesting (exceeds MAX_NESTING_DEPTH of 255)
+    var pattern_buf: [600]u8 = undefined;
     var pos: usize = 0;
 
-    // Write 101 opening parens
-    for (0..101) |_| {
+    // Write 256 opening parens
+    for (0..256) |_| {
         pattern_buf[pos] = '(';
         pos += 1;
     }
@@ -1773,8 +1814,8 @@ test "parser: nesting depth limit" {
     pattern_buf[pos] = 'a';
     pos += 1;
 
-    // Write 101 closing parens
-    for (0..101) |_| {
+    // Write 256 closing parens
+    for (0..256) |_| {
         pattern_buf[pos] = ')';
         pos += 1;
     }

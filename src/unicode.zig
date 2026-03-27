@@ -208,6 +208,18 @@ pub fn isAlphanumeric(cp: Codepoint) bool {
     return isLetter(cp) or isDigit(cp);
 }
 
+/// O(1) Lowercase folding utilizing the Unicode Character Database
+pub fn toLower(cp: Codepoint) Codepoint {
+    if (cp >= 'A' and cp <= 'Z') return cp + ('a' - 'A');
+
+    const unicode_tables = @import("unicode_tables.zig");
+    const rec = unicode_tables.getUcdRecord(cp);
+
+    // Apply the precomputed delta mapping from the UCD
+    const lowered: i32 = @as(i32, @intCast(cp)) + rec.lowercase_delta;
+    return @intCast(lowered);
+}
+
 /// Check if a codepoint is whitespace
 pub fn isWhitespace(cp: Codepoint) bool {
     const cat = getGeneralCategory(cp);

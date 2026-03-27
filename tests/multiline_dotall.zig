@@ -143,3 +143,21 @@ test "default flags: multiline and dot-all are false" {
     try std.testing.expect(!try regex.isMatch("test\nsuffix"));
     try std.testing.expect(try regex.isMatch("test"));
 }
+
+test "multiline flag: $ matches before CRLF (Windows line endings)" {
+    const allocator = std.testing.allocator;
+
+    var regex_multi = try Regex.compileWithFlags(allocator, "b$", .{ .multiline = true });
+    defer regex_multi.deinit();
+
+    // Input with Windows CRLF (\r\n)
+    const input = "a\r\nb\r\nc";
+
+    if (try regex_multi.find(input)) |match| {
+        var mut_match = match;
+        defer mut_match.deinit(allocator);
+        try std.testing.expectEqualStrings("b", match.slice);
+    } else {
+        return error.TestExpectedMatch;
+    }
+}

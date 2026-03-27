@@ -143,7 +143,39 @@ pub const CompileFlags = packed struct {
     dot_all: bool = false,
     extended: bool = false,
     unicode: bool = false,
+
+    /// Parses standard regex string flags (e.g. "imx") into a CompileFlags struct.
+    pub fn parse(flags_str: []const u8) !CompileFlags {
+        var flags = CompileFlags{};
+        for (flags_str) |ch| {
+            switch (ch) {
+                'i' => flags.case_insensitive = true,
+                'm' => flags.multiline = true,
+                's' => flags.dot_all = true,
+                'x' => flags.extended = true,
+                'u' => flags.unicode = true,
+                else => return error.InvalidFlags,
+            }
+        }
+        return flags;
+    }
 };
+
+test "CompileFlags.parse" {
+    const flags1 = try CompileFlags.parse("imx");
+    try std.testing.expect(flags1.case_insensitive);
+    try std.testing.expect(flags1.multiline);
+    try std.testing.expect(flags1.extended);
+    try std.testing.expect(!flags1.dot_all);
+    try std.testing.expect(!flags1.unicode);
+
+    const flags2 = try CompileFlags.parse("su");
+    try std.testing.expect(!flags2.case_insensitive);
+    try std.testing.expect(flags2.dot_all);
+    try std.testing.expect(flags2.unicode);
+
+    try std.testing.expectError(error.InvalidFlags, CompileFlags.parse("imZ"));
+}
 
 /// Comptime helper for creating precomputed static CharClasses
 /// This computes the FastBitSet at compile time - zero runtime overhead

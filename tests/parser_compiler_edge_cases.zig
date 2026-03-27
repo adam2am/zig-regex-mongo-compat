@@ -409,3 +409,75 @@ test "compiler: dot repeat" {
     try std.testing.expect(!try regex.isMatch("ab"));
     try std.testing.expect(!try regex.isMatch("abcd"));
 }
+
+// --- PCRE-specific structural edge cases ---
+
+test "parser: PCRE comments (?#...) are stripped by lexer" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "a(?# this is a comment )b");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("ab"));
+    try std.testing.expect(!try regex.isMatch("a(?# this is a comment )b"));
+}
+
+test "parser: quantifier on anchor ^* is rejected" {
+    const allocator = std.testing.allocator;
+    const result = Regex.compile(allocator, "^*a");
+    try std.testing.expectError(RegexError.InvalidQuantifier, result);
+}
+
+test "parser: quantifier on lookahead (?=foo)+ is rejected" {
+    const allocator = std.testing.allocator;
+    const result = Regex.compile(allocator, "(?=foo)+");
+    try std.testing.expectError(RegexError.InvalidQuantifier, result);
+}
+
+test "parser: empty character class [] first ] is treated as literal" {
+    const allocator = std.testing.allocator;
+    // []] = character class containing only ']'
+    var regex = try Regex.compile(allocator, "[]]");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("]"));
+    try std.testing.expect(!try regex.isMatch("a"));
+}
+
+test "parser: unclosed POSIX class [[:alpha] is rejected" {
+    const allocator = std.testing.allocator;
+    const result = Regex.compile(allocator, "[[:alpha]");
+    try std.testing.expectError(RegexError.InvalidCharacterClass, result);
+}
+
+test "parser: escaped anchor literals \\^ and \\$" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "\\^abc\\$");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("^abc$"));
+    try std.testing.expect(!try regex.isMatch("abc"));
+}
+
+test "parser: escaped dot literal file\\.txt" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "file\\.txt");
+    defer regex.deinit();
+    try std.testing.expect(try regex.isMatch("file.txt"));
+    try std.testing.expect(!try regex.isMatch("fileXtxt"));
+}
+
+test "parser: trailing backslash is an error" {
+    const allocator = std.testing.allocator;
+    const result = Regex.compile(allocator, "abc\\");
+    try std.testing.expectError(RegexError.UnexpectedEndOfPattern, result);
+}
+
+test "parser: incomplete hex sequence is an error" {
+    const allocator = std.testing.allocator;
+    const result = Regex.compile(allocator, "\\x1");
+    try std.testing.expectError(RegexError.UnexpectedEndOfPattern, result);
+}
+
+test "parser: null byte in pattern is an error" {
+    const allocator = std.testing.allocator;
+    const result = Regex.compile(allocator, "A\\x00B");
+    try std.testing.expectError(RegexError.InvalidPattern, result);
+}
+
