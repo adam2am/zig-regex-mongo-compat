@@ -6,7 +6,7 @@
 
 [![Zig](https://img.shields.io/badge/Zig-0.15.2-orange.svg)](https://ziglang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-519%2F519%20passing-green.svg)](test/)
+[![Tests](https://img.shields.io/badge/tests-608%2F608%20passing-green.svg)](test/)
 
 [Features](#features) - [Installation](#installation) - [Quick Start](#quick-start) - [Test Results](#test-results) - [Documentation](#documentation)
 
@@ -16,11 +16,11 @@
 
 ## Overview
 
-zig-regex-mongo-compat is a fork of [zig-regex](https://github.com/zig-utils/zig-regex) extended with MongoDB PCRE2 compatibility features. Adds Unicode script properties (`\p{Latin}`, `\p{Greek}`, etc.), literal sequences (`\Q...\E`), PCRE flags (`(*UTF)`, `(*UCP)`), and comprehensive edge case handling for MongoDB regex operations.
+zig-regex-mongo-compat is a fork of [zig-regex](https://github.com/zig-utils/zig-regex) extended with MongoDB PCRE2 compatibility features. It adds Unicode script properties (`\\p{Latin}`, `\\p{Greek}`, etc.), literal sequences (`\\Q...\\E`), PCRE flags (`(*UTF)`, `(*UCP)`), recursion/subroutine support, PCRE2 10.47-style recursion/subroutine capture return lists (`(?R(grouplist))`, `(?n(grouplist))`, `(?&name(grouplist))`), relative/absolute/named `\\g{...}` backreferences, advanced edge-case handling, and MongoDB-oriented behavior for regex operations.
 
-Features Thompson NFA construction with linear time complexity, backtracking engine for advanced features, and extensive Unicode support. Built with zero external dependencies and full memory control through Zig allocators.
+The current architecture uses a **bytecode VM** as the primary engine for the regular-safe subset and an **optimized backtracking engine** for advanced PCRE-compatible constructs such as lookaround, recursion, backreferences, conditionals, atomic groups, and extended grapheme matching. Shared execution planning and text-policy layers keep input validation, Unicode boundary behavior, and engine routing explicit and centralized.
 
-**Current Status:** v0.5.0 - 519/519 tests passing (100%)
+**Current Status:** v0.5.0 - 608/608 Zig tests passing (100%)
 
 ## Features
 
@@ -76,7 +76,7 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 | **Atomic Groups** | ✅ Stable | `(?>...)` |
 | **Conditional Patterns** | ✅ Stable | `(?(1)yes\|no)` |
 | **Recursive Patterns** | ✅ Stable | `(?R)`, `(?0)`, `(?1)`-`(?9)`, forward refs, depth limit |
-| **Relative Backrefs** | ❌ Not implemented | `\g{-1}` |
+| **Extended Backreferences** | ✅ Stable | `\g{-1}`, `\g{+1}`, `\g{1}`, `\g{name}` |
 | **Branch Reset** | ✅ Stable | `(?\|...)` |
 | **Script Runs** | ❌ Not implemented | `(*sr:)` |
 | **BSR Unicode** | ❌ Not implemented | `(*BSR_UNICODE)` |
@@ -84,10 +84,12 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 
 ### Advanced Features
 
-- **Hybrid Execution Engine**: Automatically selects between Thompson NFA (O(n*m)) and optimized backtracking
+- **Hybrid Execution Engine**: Automatically selects between a bytecode VM and optimized backtracking
+- **Bytecode VM Core**: Flat instruction stream for fast matching on the regular-safe subset
+- **Shared Execution Planning**: Centralized engine routing, validation policy, and boundary policy selection
+- **Shared Text Policy**: One source of truth for UTF-8 validation, line breaks, and ASCII vs UCP word boundaries
 - **O(1) Character Matching**: FastBitSet (256-bit) provides constant-time ASCII/Latin-1 character class lookups
 - **AST Optimization**: Constant folding, dead code elimination, quantifier simplification
-- **NFA Optimization**: Epsilon transition removal, state merging, transition optimization
 - **Pattern Macros**: Composable, reusable pattern definitions
 - **Type-Safe Builder API**: Fluent interface for programmatic pattern construction
 - **Thread Safety**: Safe concurrent matching with `SharedRegex` and `RegexCache`
@@ -98,11 +100,12 @@ Features Thompson NFA construction with linear time complexity, backtracking eng
 ### Quality
 
 - **Zero Dependencies**: Only Zig standard library
-- **Linear Time Matching**: Thompson NFA guarantees O(n*m) worst-case
+- **Fast Primary Engine**: Bytecode VM executes the regular-safe subset with low overhead and contiguous instruction dispatch
 - **Memory Safety**: Full control via Zig allocators, no hidden allocations, zero leaks
 - **O(1) Character Matching**: FastBitSet provides 256-bit lookup for ASCII/Latin-1 characters
-- **ReDoS Protection**: Hard-abort flag prevents catastrophic backtracking
-- **519 Test Suite**: 519/519 tests passing (100%) - comprehensive MongoDB PCRE2 edge case coverage
+- **ReDoS Protection**: Planning + hard-abort protection prevent catastrophic backtracking from taking down matching
+- **608 Zig Tests**: 608/608 passing (100%) - native low-level coverage across anchors (`\\A`, `\\z`, `\\Z`), recursion, backreferences, Unicode, atomic groups, graphemes, and parser/compiler hardening
+- **304 Companion Integration Tests**: Verified in the `bson_helpers` SQLite wrapper suite, covering BSON path extraction, wrapper cache isolation, error propagation, and MongoDB-style end-to-end PCRE edge cases
 - **Production Ready**: Core features stable, Unicode support complete, known limitations documented
 
 ## Installation
@@ -205,7 +208,7 @@ defer regex.deinit();
 zig build                              # Build library
 zig build test                         # Run all Zig tests
 zig build test-unicode-property        # Run Unicode property tests
-zig build test-literal-sequence        # Run \Q...\E tests
+zig build test-string-anchors          # Run \\A / \\z / \\Z anchor tests
 
 # Full test suite (requires bson_helpers project)
 cd ../bson_helpers
@@ -218,9 +221,11 @@ bun run build && bun test/ts/test_edge_cases.ts
 
 ## Test Results
 
-**Overall:** 519/519 tests passing (100%)
+**Overall (library repo):** 608/608 Zig tests passing (100%)
 
-### ✅ Fully Working (519 tests)
+**Companion wrapper verification:** 304/304 `bson_helpers` TS integration tests passing (end-to-end SQLite extension coverage)
+
+### ✅ Fully Working
 - Core regex features (anchors, quantifiers, character classes, groups)
 - Unicode support (8 scripts: Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
 - PCRE flags (`(*UTF)`, `(*UCP)`)
@@ -240,11 +245,11 @@ bun run build && bun test/ts/test_edge_cases.ts
 - **NEW: Extended grapheme clusters** `\X` (UAX#29 compliant)
 - **NEW: Recursive patterns** `(?R)`, `(?0)`, `(?1)`-`(?9)` with depth limit
 
-### ⚠️ Known Issues (0 tests)
-- None
+### ⚠️ Known Issues
+- No currently known correctness regressions in the covered feature set
+- Unsupported and partially implemented PCRE features are explicitly tested and documented below
 
-### ❌ Not Implemented (3 tests)
-- Relative backreferences `\g{-1}`
+### ? Not Implemented (2 tests)
 - Script runs `(*sr:)`
 - `(*BSR_UNICODE)` flag
 
@@ -277,7 +282,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## Acknowledgments
 
 - **Forked from:** [zig-regex](https://github.com/zig-utils/zig-regex) by zig-utils
-- **Inspired by:** Ken Thompson's NFA construction algorithm, RE2 (Google's regex engine), Rust's regex crate
+- **Inspired by:** Ken Thompson's automata ideas, RE2 (Google's regex engine), PCRE2 semantics, and Rust's regex ecosystem
 - **MongoDB PCRE2 compatibility:** Test cases derived from MongoDB's regex implementation
 
 ## Roadmap
@@ -286,13 +291,13 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - [x] FastBitSet for O(1) ASCII matching
 - [x] Recursive patterns `(?R)`, `(?0)`, `(?1)`-`(?9)` with depth limit
 - [x] ReDoS protection with hard-abort flag
-- [ ] PCRE2 10.46+ `(?R(grouplist))` return captures from recursion
-- [ ] Relative backreferences `\g{-1}`
+- [x] PCRE2 10.47+ `(?R(grouplist))` / `(?n(grouplist))` capture return values from recursion/subroutines
+- [x] Relative, absolute, and named backreferences `\g{-1}`, `\g{+1}`, `\g{1}`, `\g{name}`
 - [ ] Script runs `(*sr:)`
 - [ ] `(*BSR_UNICODE)` flag
 
 ### Future
-- Bytecode VM backtracker for better capture semantics
-- Continuation-passing style to eliminate collectAllMatches
+- Continue expanding bytecode coverage for additional safe pattern subsets
+- Further simplify backtracking candidate propagation internals
 
 See [UNSUPPORTED_FEATURES.md](UNSUPPORTED_FEATURES.md) for detailed prioritization.
