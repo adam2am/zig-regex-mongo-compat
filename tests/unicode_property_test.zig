@@ -76,3 +76,16 @@ test "Unicode property: empty braces are rejected" {
     const allocator = testing.allocator;
     try testing.expectError(regex.RegexError.InvalidUnicodeProperty, regex.Regex.compile(allocator, "\\p{}"));
 }
+
+test "Unicode literal Hangul matches exactly" {
+    const allocator = testing.allocator;
+    const hangul = "\u{D55C}\u{AE00}";
+    const han = "\u{6F22}\u{5B57}";
+
+    var re = try regex.Regex.compile(allocator, "^\u{D55C}\u{AE00}$");
+    defer re.deinit();
+
+    try testing.expect(try re.isMatch(hangul));
+    try testing.expect(!try re.isMatch(han));
+}
+
