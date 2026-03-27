@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const common = @import("common.zig");
+const errors = @import("errors.zig");
 const unicode = @import("unicode.zig");
 const unicode_tables = @import("unicode_tables.zig");
 const vm = @import("vm.zig");
@@ -231,8 +232,8 @@ pub const BacktrackEngine = struct {
     }
 
     /// Test if pattern matches entire input
-    pub fn isMatch(self: *BacktrackEngine, input: []const u8) bool {
-        if (self.find(input)) |match| {
+    pub fn isMatch(self: *BacktrackEngine, input: []const u8) !bool {
+        if (try self.find(input)) |match| {
             self.allocator.free(match.captures);
             return true;
         }
@@ -240,7 +241,7 @@ pub const BacktrackEngine = struct {
     }
 
     /// Find first match in input
-    pub fn find(self: *BacktrackEngine, input: []const u8) ?BacktrackMatch {
+    pub fn find(self: *BacktrackEngine, input: []const u8) !?BacktrackMatch {
         self.input = input;
         self.aborted = false; // Reset abort for new search attempt
         // REMOVED: This flag broke lazy quantifiers by preventing expansion
@@ -250,7 +251,7 @@ pub const BacktrackEngine = struct {
 
         var pos: usize = 0;
         while (pos <= input.len) : (pos += 1) {
-            if (self.aborted) return null; // Hard break if previous start position hit ReDoS limits
+            if (self.aborted) return errors.RegexError.Timeout; // Hard break if previous start position hit ReDoS limits
             self.resetCaptures();
             self.state_stack.shrinkRetainingCapacity(0); // Clear state stack to prevent memory leaks
             self.step_count = 0; // Reset step counter per starting position
@@ -273,6 +274,7 @@ pub const BacktrackEngine = struct {
                     };
                 }
             }
+            if (self.aborted) return errors.RegexError.Timeout;
         }
         return null;
     }
@@ -1197,7 +1199,7 @@ pub const BacktrackEngine = struct {
                 }
             }
             if (check_pos == 0) break;
-            check_pos -= 1;
+            check_pos = unicode.stepBackward(self.input, check_pos);
         }
         self.popState(stack_base);
         if (matched == assertion.positive) return pos;
@@ -1239,7 +1241,7 @@ test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
     defer engine.deinit();
 
     // Should timeout/abort instead of hanging
-    const result = engine.find(input);
+    const result = engine.find(input) catch null;
 
     // Either returns null (no match) or completes quickly
     // The key is that it DOES return, not hang forever
@@ -1276,7 +1278,7 @@ test "backtrack: ReDoS protection - nested stars (a*)*b" {
     var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
-    const result = engine.find(input);
+    const result = engine.find(input) catch null;
     try std.testing.expect(result == null);
 }
 
@@ -1306,7 +1308,7 @@ test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
     var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, named_captures);
     defer engine.deinit();
 
-    const result = engine.find(input);
+    const result = engine.find(input) catch null;
     try std.testing.expect(result == null);
 }
 
@@ -1339,7 +1341,7 @@ test "backtrack: configurable step limit" {
     // Set a very low limit to test timeout behavior
     engine.max_steps = 100;
 
-    const result = engine.find(input);
+    const result = engine.find(input) catch null;
     try std.testing.expect(result == null);
 
     // Should have done some steps (may or may not hit the limit depending on pattern)
@@ -1373,7 +1375,7 @@ test "backtrack: step counter increments" {
     defer engine.deinit();
 
     const initial_count = engine.step_count;
-    _ = engine.find(input);
+    _ = engine.find(input) catch {};
 
     // Step counter should have increased
     try std.testing.expect(engine.step_count > initial_count);

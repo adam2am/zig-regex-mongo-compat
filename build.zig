@@ -415,6 +415,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_debug_posix_tests = b.addRunArtifact(debug_posix_tests);
 
+    const integration_hardening_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration_hardening.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_integration_hardening_tests = b.addRunArtifact(integration_hardening_tests);
+
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -457,6 +469,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_extended_grapheme_tests.step);
     test_step.dependOn(&run_recursion_tests.step);
     test_step.dependOn(&run_debug_posix_tests.step);
+    test_step.dependOn(&run_integration_hardening_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;
@@ -745,4 +758,7 @@ pub fn build(b: *std.Build) void {
 
     const test_parser_edge_cases_step = b.step("test-parser-edge-cases", "Run parser_compiler_edge_cases tests");
     test_parser_edge_cases_step.dependOn(&run_parser_compiler_edge_cases_tests.step);
+
+    const test_hardening_step = b.step("test-hardening", "Run integration hardening tests");
+    test_hardening_step.dependOn(&run_integration_hardening_tests.step);
 }

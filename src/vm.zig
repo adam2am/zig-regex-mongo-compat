@@ -62,14 +62,26 @@ pub const VM = struct {
     allocator: std.mem.Allocator,
     num_captures: usize,
     flags: common.CompileFlags,
+    visited_buf: []bool, // Reusable epsilon-closure visited cache; sized to nfa.states.len at init
+    /// Always false for the NFA engine — Thompson is polynomial and cannot ReDoS.
+    /// Reserved for API symmetry with BacktrackEngine; checked in VM.find() defensively.
+    aborted: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, nfa: *compiler.NFA, num_captures: usize, flags: common.CompileFlags) VM {
+    pub fn init(allocator: std.mem.Allocator, nfa: *compiler.NFA, num_captures: usize, flags: common.CompileFlags) !VM {
+        const num_states = nfa.states.items.len;
+        const visited_buf = try allocator.alloc(bool, num_states);
+        
         return .{
             .nfa = nfa,
             .allocator = allocator,
             .num_captures = num_captures,
             .flags = flags,
+            .visited_buf = visited_buf,
         };
+    }
+
+    pub fn deinit(self: *VM) void {
+        self.allocator.free(self.visited_buf);
     }
 
     /// Helper to compare characters with case-insensitive support
@@ -100,10 +112,8 @@ pub const VM = struct {
             next_threads.deinit(self.allocator);
         }
 
-        // Pre-allocate visited array for epsilon closure (reused across iterations)
-        const num_states = self.nfa.states.items.len;
-        const visited_buf = try self.allocator.alloc(bool, num_states);
-        defer self.allocator.free(visited_buf);
+        // Uses the VM's pre-allocated visited_buf array for epsilon closure 
+        // to avoid HashMap/Array allocation overhead on every matchAt call.
 
         // Start with initial thread at start state
         var initial_thread = try Thread.init(self.allocator, self.nfa.start_state, self.num_captures);
@@ -124,7 +134,7 @@ pub const VM = struct {
         try current_threads.append(self.allocator, initial_thread);
 
         // Process epsilon closures for initial state
-        try self.addEpsilonClosure(&current_threads, start_pos, input, visited_buf);
+        try self.addEpsilonClosure(&current_threads, start_pos, input, self.visited_buf);
 
         var pos = start_pos;
         var last_match: ?MatchResult = null;
@@ -211,7 +221,7 @@ pub const VM = struct {
             }
 
             // Process epsilon closures for next threads
-            try self.addEpsilonClosure(&next_threads, pos + utf8_len, input, visited_buf);
+            try self.addEpsilonClosure(&next_threads, pos + utf8_len, input, self.visited_buf);
 
             // Swap thread lists
             const tmp = current_threads;
@@ -236,9 +246,14 @@ pub const VM = struct {
         // Try matching at each position (advance by UTF-8 codepoint, not byte)
         var pos: usize = 0;
         while (pos <= input.len) {
+            // Abort immediately on global rejection (ReDoS trigger limit reached)
+            if (self.aborted) return errors.RegexError.Timeout;
+
             if (try self.matchAt(input, pos)) |result| {
                 return result;
             }
+
+            if (self.aborted) return errors.RegexError.Timeout;
 
             // Advance to next UTF-8 codepoint
             if (pos < input.len) {
@@ -421,7 +436,8 @@ test "vm match literal" {
     var state0 = nfa.getState(s0);
     try state0.addTransition(compiler.Transition.char('a', false, s1));
 
-    var vm = VM.init(allocator, &nfa, 0, .{});
+    var vm = try VM.init(allocator, &nfa, 0, .{});
+    defer vm.deinit();
     const result = try vm.matchAt("a", 0);
     try std.testing.expect(result != null);
     if (result) |res| {
@@ -448,7 +464,8 @@ test "vm find in string" {
     var state0 = nfa.getState(s0);
     try state0.addTransition(compiler.Transition.char('b', false, s1));
 
-    var vm = VM.init(allocator, &nfa, 0, .{});
+    var vm = try VM.init(allocator, &nfa, 0, .{});
+    defer vm.deinit();
     const result = try vm.find("abc");
     try std.testing.expect(result != null);
     if (result) |res| {

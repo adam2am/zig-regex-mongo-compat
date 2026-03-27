@@ -12,6 +12,18 @@ pub fn utf8ByteSequenceLength(first_byte: u8) u3 {
     return 1; // Invalid UTF-8, treat as single byte
 }
 
+/// Step backward one UTF-8 codepoint.
+/// Returns the index of the start of the previous UTF-8 sequence, ensuring it doesn't drop below 0.
+pub fn stepBackward(bytes: []const u8, current_pos: usize) usize {
+    if (current_pos == 0) return 0;
+    var pos = current_pos - 1;
+    // Continuation bytes match 10xxxxxx
+    while (pos > 0 and (bytes[pos] & 0xC0) == 0x80) {
+        pos -= 1;
+    }
+    return pos;
+}
+
 /// Decode a UTF-8 codepoint from a byte slice
 /// Returns the codepoint and the number of bytes consumed
 pub fn decodeUtf8(bytes: []const u8) !struct { codepoint: Codepoint, len: u3 } {

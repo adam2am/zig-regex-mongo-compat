@@ -7,6 +7,7 @@ const ast = @import("ast.zig");
 const common = @import("common.zig");
 const optimizer = @import("optimizer.zig");
 const backtrack = @import("backtrack.zig");
+const unicode = @import("unicode.zig");
 
 /// Represents a match result from a regex operation
 pub const Match = struct {
@@ -190,12 +191,13 @@ pub const Regex = struct {
         switch (self.engine_type) {
             .thompson_nfa => {
                 const nfa_mut = @constCast(&self.nfa);
-                var virtual_machine = vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
+                var virtual_machine = try vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
+                defer virtual_machine.deinit();
                 return try virtual_machine.isMatch(input);
             },
             .backtracking => {
                 const engine_mut = @constCast(&self.backtrack_engine.?);
-                return engine_mut.isMatch(input);
+                return try engine_mut.isMatch(input);
             },
         }
     }
@@ -253,7 +255,8 @@ pub const Regex = struct {
         switch (self.engine_type) {
             .thompson_nfa => {
                 const nfa_mut = @constCast(&self.nfa);
-                var virtual_machine = vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
+                var virtual_machine = try vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
+                defer virtual_machine.deinit();
 
                 // Only use if strictly case-sensitive to respect inline modifier boundaries safely.
                 if (!self.flags.case_insensitive) {
@@ -282,7 +285,7 @@ pub const Regex = struct {
             },
             .backtracking => {
                 const engine_mut = @constCast(&self.backtrack_engine.?);
-                if (engine_mut.find(input)) |result| {
+                if (try engine_mut.find(input)) |result| {
                     var mut_result = result;
                     defer mut_result.deinit(self.allocator);
                     return try self.buildBacktrackMatch(input, result);
@@ -302,7 +305,8 @@ pub const Regex = struct {
             switch (self.engine_type) {
                 .thompson_nfa => {
                     const nfa_mut = @constCast(&self.nfa);
-                    var virtual_machine = vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
+                    var virtual_machine = try vm.VM.init(self.allocator, nfa_mut, self.capture_count, self.flags);
+                    defer virtual_machine.deinit();
 
                     if (try virtual_machine.find(input[pos..])) |result| {
                         // Adjust positions relative to original input
@@ -329,14 +333,22 @@ pub const Regex = struct {
                         self.allocator.free(result.captures);
 
                         // Move past this match (avoid infinite loop on zero-width matches)
-                        pos = if (adjusted_end > adjusted_start) adjusted_end else adjusted_end + 1;
+                        if (adjusted_end > adjusted_start) {
+                            pos = adjusted_end;
+                        } else {
+                            if (adjusted_end < input.len) {
+                                pos = adjusted_end + unicode.utf8ByteSequenceLength(input[adjusted_end]);
+                            } else {
+                                pos = adjusted_end + 1; // EOF
+                            }
+                        }
                     } else {
                         break;
                     }
                 },
                 .backtracking => {
                     const engine_mut = @constCast(&self.backtrack_engine.?);
-                    if (engine_mut.find(input[pos..])) |result| {
+                    if (try engine_mut.find(input[pos..])) |result| {
                         var mut_result = result;
                         defer mut_result.deinit(self.allocator);
 
@@ -365,7 +377,15 @@ pub const Regex = struct {
                         });
 
                         // Move past this match (avoid infinite loop on zero-width matches)
-                        pos = if (adjusted_end > adjusted_start) adjusted_end else adjusted_end + 1;
+                        if (adjusted_end > adjusted_start) {
+                            pos = adjusted_end;
+                        } else {
+                            if (adjusted_end < input.len) {
+                                pos = adjusted_end + unicode.utf8ByteSequenceLength(input[adjusted_end]);
+                            } else {
+                                pos = adjusted_end + 1; // EOF
+                            }
+                        }
                     } else {
                         break;
                     }
@@ -530,12 +550,13 @@ pub const Regex = struct {
                 switch (self.regex.engine_type) {
                     .thompson_nfa => {
                         const nfa_mut = @constCast(&self.regex.nfa);
-                        var virtual_machine = vm.VM.init(
+                        var virtual_machine = try vm.VM.init(
                             allocator,
                             nfa_mut,
                             self.regex.capture_count,
                             self.regex.flags,
                         );
+                        defer virtual_machine.deinit();
 
                         if (try virtual_machine.matchAt(self.input, self.pos)) |result| {
                             const adjusted_start = result.start;
@@ -562,7 +583,15 @@ pub const Regex = struct {
                             };
 
                             // Move past this match (avoid infinite loop on zero-width matches)
-                            self.pos = if (adjusted_end > adjusted_start) adjusted_end else adjusted_end + 1;
+                            if (adjusted_end > adjusted_start) {
+                                self.pos = adjusted_end;
+                            } else {
+                                if (adjusted_end < self.input.len) {
+                                    self.pos = adjusted_end + unicode.utf8ByteSequenceLength(self.input[adjusted_end]);
+                                } else {
+                                    self.pos = adjusted_end + 1; // EOF
+                                }
+                            }
 
                             return match_result;
                         }
@@ -570,8 +599,13 @@ pub const Regex = struct {
                     .backtracking => {
                         const engine_mut = @constCast(&self.regex.backtrack_engine.?);
 
+                        if (engine_mut.aborted) return RegexError.Timeout;
+
                         // Try matching at current position
                         engine_mut.resetCaptures();
+                        engine_mut.state_stack.shrinkRetainingCapacity(0); // Clear state stack to prevent memory leaks
+                        engine_mut.step_count = 0; // Reset step counter per starting position
+
                         if (engine_mut.matchNode(engine_mut.ast_root, self.pos)) |end_pos| {
                             if (end_pos > self.pos or (end_pos == self.pos and engine_mut.canMatchEmpty(engine_mut.ast_root))) {
                                 // Build match result
@@ -596,11 +630,21 @@ pub const Regex = struct {
                                 };
 
                                 // Move past this match
-                                self.pos = if (end_pos > self.pos) end_pos else end_pos + 1;
+                                if (end_pos > self.pos) {
+                                    self.pos = end_pos;
+                                } else {
+                                    if (end_pos < self.input.len) {
+                                        self.pos = end_pos + unicode.utf8ByteSequenceLength(self.input[end_pos]);
+                                    } else {
+                                        self.pos = end_pos + 1; // EOF
+                                    }
+                                }
 
                                 return match_result;
                             }
                         }
+
+                        if (engine_mut.aborted) return RegexError.Timeout;
                     },
                 }
 
