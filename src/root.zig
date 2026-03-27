@@ -91,6 +91,8 @@ pub const common = @import("common.zig");
 pub const parser = @import("parser.zig");
 pub const compiler = @import("compiler.zig");
 pub const optimizer = @import("optimizer.zig");
+pub const backtrack = @import("backtrack.zig");
+pub const text_policy = @import("text_policy.zig");
 pub const debug = @import("debug.zig");
 pub const profiling = @import("profiling.zig");
 

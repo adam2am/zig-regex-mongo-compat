@@ -37,9 +37,25 @@ test "string anchor: \\Z end of text (before optional newline)" {
     try std.testing.expect(try regex.isMatch("abc"));
     try std.testing.expect(try regex.isMatch("xyzabc"));
 
-    // For now, \\Z behaves the same as \\z (we treat them the same)
-    // In a full implementation, \\Z would match before an optional final newline
+    // Unlike \\z, \\Z should also match before one final trailing newline.
+    try std.testing.expect(try regex.isMatch("abc\n"));
+}
+
+test "string anchor: \\Z matches before final CRLF newline" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "abc\\Z");
+    defer regex.deinit();
+
+    try std.testing.expect(try regex.isMatch("abc\r\n"));
+}
+
+test "string anchor: \\z remains strict absolute end" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "abc\\z");
+    defer regex.deinit();
+
     try std.testing.expect(!try regex.isMatch("abc\n"));
+    try std.testing.expect(!try regex.isMatch("abc\r\n"));
 }
 
 test "string anchors: \\A vs ^" {

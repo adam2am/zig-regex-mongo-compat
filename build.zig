@@ -452,6 +452,18 @@ pub fn build(b: *std.Build) void {
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
     _ = run_fuzz_tests; // Temporarily unused
 
+    const differential_fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/differential_fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_differential_fuzz_tests = b.addRunArtifact(differential_fuzz_tests);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
@@ -483,6 +495,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_debug_posix_tests.step);
     test_step.dependOn(&run_integration_hardening_tests.step);
     test_step.dependOn(&run_execution_session_tests.step);
+    test_step.dependOn(&run_differential_fuzz_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
     _ = run_lazy_quantifiers_tests;
@@ -763,6 +776,9 @@ pub fn build(b: *std.Build) void {
     const test_backreferences_step = b.step("test-backreferences", "Run backreferences tests");
     test_backreferences_step.dependOn(&run_backreferences_tests.step);
 
+    const test_string_anchors_step = b.step("test-string-anchors", "Run string_anchors tests");
+    test_string_anchors_step.dependOn(&run_string_anchors_tests.step);
+
     const test_utf8_unicode_step = b.step("test-utf8-unicode", "Run utf8_unicode tests");
     test_utf8_unicode_step.dependOn(&run_utf8_unicode_tests.step);
 
@@ -777,4 +793,7 @@ pub fn build(b: *std.Build) void {
 
     const test_execution_session_step = b.step("test-execution-session", "Run execution_session tests");
     test_execution_session_step.dependOn(&run_execution_session_tests.step);
+
+    const test_differential_fuzz_step = b.step("test-differential-fuzz", "Run deterministic differential engine tests");
+    test_differential_fuzz_step.dependOn(&run_differential_fuzz_tests.step);
 }
