@@ -97,7 +97,8 @@ pub const BytecodeVM = struct {
                     .start_line => pos == 0 or (multiline and text_policy.isLineBreakBefore(input, pos)),
                     .end_line => pos == input.len or (multiline and text_policy.isLineBreakAt(input, pos)),
                     .start_text => pos == 0,
-                    .end_text => pos == input.len,
+                    .end_text_strict => text_policy.isAbsoluteEnd(input, pos),
+                    .end_text_before_final_newline => text_policy.isEndBeforeFinalNewline(input, pos),
                     .word_boundary => text_policy.isWordBoundary(input, pos, self.word_boundary_policy),
                     .non_word_boundary => text_policy.isNonWordBoundary(input, pos, self.word_boundary_policy),
                 };

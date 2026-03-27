@@ -390,7 +390,8 @@ pub const BacktrackEngine = struct {
                         break :blk null;
                     },
                     .start_text => if (pos == 0) pos else null,
-                    .end_text => if (pos == self.input.len) pos else null,
+                    .end_text_strict => if (text_policy.isAbsoluteEnd(self.input, pos)) pos else null,
+                    .end_text_before_final_newline => if (text_policy.isEndBeforeFinalNewline(self.input, pos)) pos else null,
                     .word_boundary => if (text_policy.isWordBoundary(self.input, pos, self.word_boundary_policy)) pos else null,
                     .non_word_boundary => if (text_policy.isNonWordBoundary(self.input, pos, self.word_boundary_policy)) pos else null,
                 };

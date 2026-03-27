@@ -8,7 +8,8 @@ fn anchorToString(anchor_type: ast.AnchorType) []const u8 {
         .start_line => "^",
         .end_line => "$",
         .start_text => "\\A",
-        .end_text => "\\z",
+        .end_text_strict => "\\z",
+        .end_text_before_final_newline => "\\Z",
         .word_boundary => "\\b",
         .non_word_boundary => "\\B",
     };
@@ -96,7 +97,8 @@ pub const PrettyPrinter = struct {
                     .start_line => "^ (start of line)",
                     .end_line => "$ (end of line)",
                     .start_text => "\\A (start of text)",
-                    .end_text => "\\z (end of text)",
+                    .end_text_strict => "\\z (strict end of text)",
+                    .end_text_before_final_newline => "\\Z (end of text or before final newline)",
                     .word_boundary => "\\b (word boundary)",
                     .non_word_boundary => "\\B (non-word boundary)",
                 };

@@ -46,6 +46,21 @@ pub fn isNonWordBoundary(input: []const u8, pos: usize, policy: WordBoundaryPoli
     return !isWordBoundary(input, pos, policy);
 }
 
+pub fn isAbsoluteEnd(input: []const u8, pos: usize) bool {
+    return pos == input.len;
+}
+
+pub fn isEndBeforeFinalNewline(input: []const u8, pos: usize) bool {
+    if (pos == input.len) return true;
+    if (pos > input.len) return false;
+
+    if (pos + 1 == input.len and input[pos] == '\n') return true;
+    if (pos + 1 == input.len and input[pos] == '\r') return true;
+    if (pos + 2 == input.len and input[pos] == '\r' and input[pos + 1] == '\n') return true;
+
+    return false;
+}
+
 fn isWordChar(cp: u21, policy: WordBoundaryPolicy) bool {
     return unicode_tables.isWordChar(cp, policy == .unicode_ucp);
 }

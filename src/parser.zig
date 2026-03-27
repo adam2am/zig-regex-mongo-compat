@@ -922,9 +922,13 @@ pub const Parser = struct {
                 try self.advance();
                 return ast.Node.createAnchor(self.astAllocator(), .start_text, self.currentFlags().multiline, span);
             },
-            .escape_z, .escape_Z => {
+            .escape_z => {
                 try self.advance();
-                return ast.Node.createAnchor(self.astAllocator(), .end_text, self.currentFlags().multiline, span);
+                return ast.Node.createAnchor(self.astAllocator(), .end_text_strict, self.currentFlags().multiline, span);
+            },
+            .escape_Z => {
+                try self.advance();
+                return ast.Node.createAnchor(self.astAllocator(), .end_text_before_final_newline, self.currentFlags().multiline, span);
             },
             .escape_char => {
                 try self.advance();

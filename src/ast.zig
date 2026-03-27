@@ -45,7 +45,8 @@ pub const AnchorType = enum {
     start_line, // ^
     end_line, // $
     start_text, // \A
-    end_text, // \z or \Z
+    end_text_strict, // \z
+    end_text_before_final_newline, // \Z
     word_boundary, // \b
     non_word_boundary, // \B
 };
