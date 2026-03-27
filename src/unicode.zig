@@ -35,7 +35,7 @@ pub fn decodeUtf8(bytes: []const u8) !struct { codepoint: Codepoint, len: u3 } {
     if (bytes.len < len) return error.InvalidUtf8;
 
     const codepoint: Codepoint = switch (len) {
-        1 => first,
+        1 => if (first < 0x80) first else return error.InvalidUtf8,
         2 => blk: {
             if ((bytes[1] & 0b11000000) != 0b10000000) return error.InvalidUtf8;
             const cp = (@as(Codepoint, first & 0b00011111) << 6) | (bytes[1] & 0b00111111);
@@ -246,17 +246,17 @@ test "UTF-8 decoding" {
     try std.testing.expectEqual(@as(u3, 1), ascii.len);
 
     // 2-byte (é = U+00E9)
-    const two_byte = try decodeUtf8("é");
+    const two_byte = try decodeUtf8("\u{00E9}");
     try std.testing.expectEqual(@as(Codepoint, 0x00E9), two_byte.codepoint);
     try std.testing.expectEqual(@as(u3, 2), two_byte.len);
 
     // 3-byte (€ = U+20AC)
-    const three_byte = try decodeUtf8("€");
+    const three_byte = try decodeUtf8("\u{20AC}");
     try std.testing.expectEqual(@as(Codepoint, 0x20AC), three_byte.codepoint);
     try std.testing.expectEqual(@as(u3, 3), three_byte.len);
 
     // 4-byte (𝕳 = U+1D573)
-    const four_byte = try decodeUtf8("𝕳");
+    const four_byte = try decodeUtf8("\u{1D573}");
     try std.testing.expectEqual(@as(Codepoint, 0x1D573), four_byte.codepoint);
     try std.testing.expectEqual(@as(u3, 4), four_byte.len);
 }
@@ -272,17 +272,17 @@ test "UTF-8 encoding" {
     // 2-byte
     const len2 = try encodeUtf8(0x00E9, &buffer);
     try std.testing.expectEqual(@as(u3, 2), len2);
-    try std.testing.expectEqualStrings("é", buffer[0..len2]);
+    try std.testing.expectEqualStrings("\u{00E9}", buffer[0..len2]);
 
     // 3-byte
     const len3 = try encodeUtf8(0x20AC, &buffer);
     try std.testing.expectEqual(@as(u3, 3), len3);
-    try std.testing.expectEqualStrings("€", buffer[0..len3]);
+    try std.testing.expectEqualStrings("\u{20AC}", buffer[0..len3]);
 
     // 4-byte
     const len4 = try encodeUtf8(0x1D573, &buffer);
     try std.testing.expectEqual(@as(u3, 4), len4);
-    try std.testing.expectEqualStrings("𝕳", buffer[0..len4]);
+    try std.testing.expectEqualStrings("\u{1D573}", buffer[0..len4]);
 }
 
 /// Unicode property names for \p{Property} matching
@@ -408,7 +408,7 @@ pub fn matchesProperty(cp: Codepoint, property: UnicodeProperty) bool {
 test "Unicode categories" {
     try std.testing.expect(isLetter('a'));
     try std.testing.expect(isLetter('Z'));
-    try std.testing.expect(isLetter('é'));
+    try std.testing.expect(isLetter(0x00E9));
     try std.testing.expect(!isLetter('5'));
 
     try std.testing.expect(isDigit('0'));
@@ -584,7 +584,7 @@ test "unicode: alphanumeric edge cases" {
     try std.testing.expect(isAlphanumeric('Z'));
     try std.testing.expect(isAlphanumeric('0'));
     try std.testing.expect(isAlphanumeric('9'));
-    try std.testing.expect(isAlphanumeric('é'));
+    try std.testing.expect(isAlphanumeric(0x00E9));
 
     // Not alphanumeric
     try std.testing.expect(!isAlphanumeric(' '));

@@ -179,3 +179,12 @@ test "regression: double pattern compile and deinit" {
         try std.testing.expect(try regex.isMatch("def"));
     }
 }
+
+test "regression: nested bounded quantifier on quantified group" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "^(?:a{1,2}){3,4}$");
+    defer regex.deinit();
+
+    // Integration regression from bson edge-case Test 45i: this pattern must compile and match.
+    try std.testing.expect(try regex.isMatch("aaaaa"));
+}
