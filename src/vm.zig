@@ -6,10 +6,13 @@ const unicode = @import("unicode.zig");
 const text_policy = @import("text_policy.zig");
 const match_types = @import("match_types.zig");
 
+const CaptureSaveId = usize;
+
 /// A single node in the linked-list of capture updates
 const CaptureNode = struct {
     pos: usize,
-    group_id: u8,
+    /// Encodes both the capture slot and boundary kind: (slot * 2) + is_end.
+    group_id: CaptureSaveId,
     next: ?usize, // Index of parent node in the pool
 };
 
@@ -225,13 +228,13 @@ pub const BytecodeVM = struct {
         var curr = cap_idx;
         while (curr) |idx| {
             const node = self.capture_pool.items[idx];
-            const group_id: usize = node.group_id / 2;
-            const is_end = (node.group_id % 2) != 0;
+            const capture_index = node.group_id / 2;
+            const is_end_marker = (node.group_id % 2) != 0;
 
-            if (is_end) {
-                captures[group_id].end = node.pos;
+            if (is_end_marker) {
+                captures[capture_index].end = node.pos;
             } else {
-                captures[group_id].start = node.pos;
+                captures[capture_index].start = node.pos;
             }
             curr = node.next;
         }
@@ -251,15 +254,15 @@ pub const BytecodeVM = struct {
         var curr = cap_idx;
         while (curr) |idx| {
             const node = self.capture_pool.items[idx];
-            const group_id: usize = node.group_id / 2;
-            const is_end = (node.group_id % 2) != 0;
+            const capture_index = node.group_id / 2;
+            const is_end_marker = (node.group_id % 2) != 0;
 
-            if (is_end) {
-                captures[group_id].end = node.pos;
+            if (is_end_marker) {
+                captures[capture_index].end = node.pos;
             } else {
-                captures[group_id].start = node.pos;
+                captures[capture_index].start = node.pos;
             }
-            captures[group_id].matched = true;
+            captures[capture_index].matched = true;
             curr = node.next;
         }
 

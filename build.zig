@@ -439,6 +439,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_execution_session_tests = b.addRunArtifact(execution_session_tests);
 
+    const deep_capture_regression_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/deep_capture_regression.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_deep_capture_regression_tests = b.addRunArtifact(deep_capture_regression_tests);
+
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -495,6 +507,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_debug_posix_tests.step);
     test_step.dependOn(&run_integration_hardening_tests.step);
     test_step.dependOn(&run_execution_session_tests.step);
+    test_step.dependOn(&run_deep_capture_regression_tests.step);
     test_step.dependOn(&run_differential_fuzz_tests.step);
     // Temporarily disabled - lazy quantifiers need backtracking engine
     // test_step.dependOn(&run_lazy_quantifiers_tests.step);
@@ -793,6 +806,9 @@ pub fn build(b: *std.Build) void {
 
     const test_execution_session_step = b.step("test-execution-session", "Run execution_session tests");
     test_execution_session_step.dependOn(&run_execution_session_tests.step);
+
+    const test_deep_captures_step = b.step("test-deep-captures", "Run deep capture regression tests");
+    test_deep_captures_step.dependOn(&run_deep_capture_regression_tests.step);
 
     const test_differential_fuzz_step = b.step("test-differential-fuzz", "Run deterministic differential engine tests");
     test_differential_fuzz_step.dependOn(&run_differential_fuzz_tests.step);
