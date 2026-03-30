@@ -1,577 +1,484 @@
-# API Reference
+# Public API
 
-Complete API documentation for the zig-regex library.
+This document defines the **supported public API** for `zig-regex-mongo-compat`.
 
-## Table of Contents
+It exists to answer two questions explicitly:
 
-- [Core Types](#core-types)
-- [Compilation](#compilation)
-- [Matching](#matching)
-- [Searching](#searching)
-- [Replacement](#replacement)
-- [Splitting](#splitting)
-- [Flags](#flags)
-- [Error Handling](#error-handling)
+1. **What is publicly exposed by the Zig package?**
+2. **What external regex flag contract is stable for Mongo-compatible integrations?**
+
+If behavior is not described here, do **not** treat it as stable API just because the current parser happens to accept it.
 
 ---
 
-## Core Types
+## Package boundary
 
-### `Regex`
-
-The main regex type representing a compiled regular expression pattern.
+The `zig build` package exports the Zig module:
 
 ```zig
-pub const Regex = struct {
-    allocator: std.mem.Allocator,
-    pattern: []const u8,
-    nfa: compiler.NFA,
-    capture_count: usize,
-    flags: common.CompileFlags,
-}
+const regex = @import("regex");
 ```
 
-### `Match`
+The public root is `src/root.zig`.
 
-Represents a match result from a regex operation.
+### Publicly exported module surface
 
-```zig
-pub const Match = struct {
-    /// The matched substring
-    slice: []const u8,
-    /// Start index in the input string
-    start: usize,
-    /// End index in the input string (exclusive)
-    end: usize,
-    /// Captured groups (if any)
-    captures: []const []const u8,
-}
-```
+The package currently re-exports these declarations from `src/root.zig`:
 
-**Methods:**
-- `deinit(allocator: std.mem.Allocator)` - Free capture group memory
+- `Regex`
+- `Match`
+- `MatchBuffer`
+- `MatchCapture`
+- `ExecutionSession`
+- `SessionIterator`
+- `Matcher` (compatibility alias)
+- `RegexError`
+- `ErrorContext`
+- `ErrorHelper`
+- `Profiler`
+- `ScopedTimer`
+- `SharedRegex`
+- `RegexCache`
+- `Builder`
+- `Patterns`
+- `Composer`
+- `Lint`
+- `ComplexityAnalyzer`
+- `MacroRegistry`
+- `CommonMacros`
+- `ASTOptimizer`
+- `PrettyPrinter`
+- `ASTStats`
+- `NFAOptimizer`
+- `NFAVisualizer`
+- `NamedCaptureRegistry`
+- `NamedMatch`
+- `UnicodeProperty`
+- `Script`
+- `AtomicGroupNode`
+- `ConditionalNode`
+- `PossessiveQuantifier`
+- `PatternAnalyzer`
+- `AnalysisResult`
+- `RiskLevel`
+- `analyzePattern`
+- `analyzeAndValidate`
+- `c_api`
+- internal/advanced namespaces re-exported for power users: `common`, `parser`, `compiler`, `optimizer`, `backtrack`, `text_policy`, `debug`, `profiling`, `unicode`, `unicode_properties`, `advanced`, `named_captures`, `pattern_analyzer`, `macros`, `thread_safety`
+
+### Not part of the packaged Zig module API
+
+The SQLite/BSON helper integration code (`bson_regex(...)`, `puresqlite_regex(...)`, SQLite extension entrypoints, JSON-path extraction, wrapper cache behavior) is **companion integration code**, not part of the package built by `build.zig`.
+
+That code may be documented here for interoperability, but it should be treated as a **wrapper contract**, not as the core Zig package API.
 
 ---
 
-## Compilation
+## Core type: `Regex`
 
-### `compile()`
+`Regex` is the primary compiled regex type.
 
-Compile a regex pattern with default flags.
+### Compile
 
 ```zig
 pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !Regex
+pub fn compileWithFlags(allocator: std.mem.Allocator, pattern: []const u8, flags: common.CompileFlags) !Regex
 ```
 
-**Parameters:**
-- `allocator` - Memory allocator for the regex and its internal structures
-- `pattern` - The regex pattern string
+Use `compile()` for default behavior and `compileWithFlags()` when you need explicit top-level flags.
 
-**Returns:** `Regex` or error
-
-**Errors:**
-- `RegexError.EmptyPattern` - Pattern string is empty
-- `RegexError.InvalidPattern` - Syntax error in pattern
-- `RegexError.UnexpectedCharacter` - Invalid character in pattern
-- `RegexError.UnexpectedEndOfPattern` - Pattern ended unexpectedly
-- `RegexError.InvalidEscapeSequence` - Invalid escape sequence
-- `RegexError.InvalidCharacterClass` - Malformed character class
-- `RegexError.UnmatchedParenthesis` - Unbalanced parentheses
-- `RegexError.UnmatchedBracket` - Unbalanced brackets
-
-**Example:**
-```zig
-const allocator = std.heap.page_allocator;
-var regex = try Regex.compile(allocator, "\\d{3}-\\d{4}");
-defer regex.deinit();
-```
-
-### `compileWithFlags()`
-
-Compile a regex pattern with custom flags.
+#### Example
 
 ```zig
-pub fn compileWithFlags(
-    allocator: std.mem.Allocator,
-    pattern: []const u8,
-    flags: common.CompileFlags
-) !Regex
+const std = @import("std");
+const regex = @import("regex");
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    var re = try regex.Regex.compileWithFlags(allocator, "^hello", .{
+        .case_insensitive = true,
+        .multiline = true,
+    });
+    defer re.deinit();
+
+    const ok = try re.isMatch("HELLO\nworld");
+    _ = ok;
+}
 ```
 
-**Parameters:**
-- `allocator` - Memory allocator
-- `pattern` - The regex pattern string
-- `flags` - Compilation flags (see [Flags](#flags))
-
-**Returns:** `Regex` or error
-
-**Example:**
-```zig
-var regex = try Regex.compileWithFlags(
-    allocator,
-    "hello",
-    .{ .case_insensitive = true }
-);
-defer regex.deinit();
-```
-
-### `deinit()`
-
-Free all resources associated with the regex.
+### Lifetime
 
 ```zig
 pub fn deinit(self: *Regex) void
 ```
 
-**Example:**
-```zig
-var regex = try Regex.compile(allocator, "pattern");
-defer regex.deinit(); // Always call deinit when done
-```
+Always call `deinit()` on a compiled regex.
 
----
-
-## Matching
-
-### `isMatch()`
-
-Check if the pattern matches anywhere in the input string.
+### Matching/search APIs
 
 ```zig
 pub fn isMatch(self: *const Regex, input: []const u8) !bool
-```
-
-**Parameters:**
-- `input` - The string to search in
-
-**Returns:** `true` if match found, `false` otherwise
-
-**Example:**
-```zig
-var regex = try Regex.compile(allocator, "\\d+");
-defer regex.deinit();
-
-if (try regex.isMatch("abc123")) {
-    std.debug.print("Found digits!\n", .{});
-}
-```
-
----
-
-## Searching
-
-### `find()`
-
-Find the first match in the input string.
-
-```zig
 pub fn find(self: *const Regex, input: []const u8) !?Match
+pub fn findInto(self: *const Regex, input: []const u8, buffer: *MatchBuffer) !bool
+pub fn findAll(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![]Match
+pub fn replace(self: *const Regex, allocator: std.mem.Allocator, input: []const u8, replacement: []const u8) ![]u8
+pub fn replaceAll(self: *const Regex, allocator: std.mem.Allocator, input: []const u8, replacement: []const u8) ![]u8
+pub fn split(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![][]const u8
 ```
 
-**Parameters:**
-- `input` - The string to search in
+### Session-oriented API
 
-**Returns:** `Match` if found, `null` otherwise
+For repeated matching, prefer creating a reusable session:
 
-**Example:**
 ```zig
-var regex = try Regex.compile(allocator, "\\d+");
-defer regex.deinit();
-
-if (try regex.find("Price: $123")) |match| {
-    var mut_match = match;
-    defer mut_match.deinit(allocator);
-
-    std.debug.print("Found: {s}\n", .{match.slice}); // "123"
-    std.debug.print("At position: {d}-{d}\n", .{match.start, match.end});
-}
+pub fn session(self: *const Regex, allocator: std.mem.Allocator) !ExecutionSession
+pub fn matchBuffer(self: *const Regex, allocator: std.mem.Allocator) !MatchBuffer
+pub fn matcher(self: *const Regex, allocator: std.mem.Allocator) !Matcher
+pub fn iterator(self: *const Regex, input: []const u8) MatchIterator
 ```
 
-### `findAll()`
+`Matcher` is a compatibility alias for `ExecutionSession`.
 
-Find all non-overlapping matches in the input string.
+---
+
+## `Match`
+
+A `Match` contains:
+
+- `slice`: the matched text
+- `start`: byte start offset
+- `end`: byte end offset
+- `captures`: capture texts for numbered groups
 
 ```zig
-pub fn findAll(
-    self: *const Regex,
-    allocator: std.mem.Allocator,
-    input: []const u8
-) ![]Match
-```
-
-**Parameters:**
-- `allocator` - Allocator for the results array
-- `input` - The string to search in
-
-**Returns:** Array of `Match` objects (caller owns, must free)
-
-**Example:**
-```zig
-var regex = try Regex.compile(allocator, "\\d+");
-defer regex.deinit();
-
-const matches = try regex.findAll(allocator, "Call 555-1234 or 555-5678");
-defer {
-    for (matches) |*match| {
-        var mut_match = match;
-        mut_match.deinit(allocator);
-    }
-    allocator.free(matches);
-}
-
-for (matches) |match| {
-    std.debug.print("Found: {s}\n", .{match.slice});
-}
-// Output:
-// Found: 555
-// Found: 1234
-// Found: 555
-// Found: 5678
+pub fn deinit(self: Match, allocator: std.mem.Allocator) void
 ```
 
 ---
 
-## Replacement
+## Compile flags
 
-### `replace()`
-
-Replace the first match with a replacement string.
-
-```zig
-pub fn replace(
-    self: *const Regex,
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    replacement: []const u8
-) ![]u8
-```
-
-**Parameters:**
-- `allocator` - Allocator for the result string
-- `input` - The input string
-- `replacement` - The replacement string
-
-**Returns:** New string with first match replaced (caller owns, must free)
-
-**Example:**
-```zig
-var regex = try Regex.compile(allocator, "\\d+");
-defer regex.deinit();
-
-const result = try regex.replace(allocator, "Price: $123", "XXX");
-defer allocator.free(result);
-
-std.debug.print("{s}\n", .{result}); // "Price: $XXX"
-```
-
-### `replaceAll()`
-
-Replace all matches with a replacement string.
-
-```zig
-pub fn replaceAll(
-    self: *const Regex,
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    replacement: []const u8
-) ![]u8
-```
-
-**Parameters:**
-- `allocator` - Allocator for the result string
-- `input` - The input string
-- `replacement` - The replacement string
-
-**Returns:** New string with all matches replaced (caller owns, must free)
-
-**Example:**
-```zig
-var regex = try Regex.compile(allocator, "\\d+");
-defer regex.deinit();
-
-const result = try regex.replaceAll(allocator, "Call 555-1234 or 555-5678", "XXX");
-defer allocator.free(result);
-
-std.debug.print("{s}\n", .{result}); // "Call XXX-XXX or XXX-XXX"
-```
-
----
-
-## Splitting
-
-### `split()`
-
-Split the input string by the regex pattern.
-
-```zig
-pub fn split(
-    self: *const Regex,
-    allocator: std.mem.Allocator,
-    input: []const u8
-) ![][]const u8
-```
-
-**Parameters:**
-- `allocator` - Allocator for the results array
-- `input` - The string to split
-
-**Returns:** Array of string slices (caller owns array, must free)
-
-**Example:**
-```zig
-var regex = try Regex.compile(allocator, ",");
-defer regex.deinit();
-
-const parts = try regex.split(allocator, "a,b,c");
-defer allocator.free(parts);
-
-for (parts) |part| {
-    std.debug.print("Part: {s}\n", .{part});
-}
-// Output:
-// Part: a
-// Part: b
-// Part: c
-```
-
----
-
-## Flags
-
-### `CompileFlags`
-
-Flags that control regex compilation and matching behavior.
+The top-level flag structure is:
 
 ```zig
 pub const CompileFlags = packed struct {
     case_insensitive: bool = false,
-    multiline: bool = false,        // Not yet implemented
-    dot_all: bool = false,           // Not yet implemented
-    extended: bool = false,          // Not yet implemented
-    unicode: bool = false,           // Not yet implemented
+    multiline: bool = false,
+    dot_all: bool = false,
+    extended: bool = false,
+    unicode: bool = false,
 }
 ```
 
-#### `case_insensitive`
+These flags are **implemented today**.
 
-When `true`, the pattern matches both uppercase and lowercase letters.
+### Semantics
 
-**Example:**
-```zig
-var regex = try Regex.compileWithFlags(
-    allocator,
-    "hello",
-    .{ .case_insensitive = true }
-);
-defer regex.deinit();
+- `case_insensitive` — case-insensitive matching
+- `multiline` — `^` and `$` operate on line boundaries
+- `dot_all` — `.` matches newlines
+- `extended` — insignificant whitespace is skipped by the lexer in top-level extended mode
+- `unicode` — enables Unicode-sensitive behavior currently used by parts of text policy and selected escapes
 
-try std.testing.expect(try regex.isMatch("HELLO")); // true
-try std.testing.expect(try regex.isMatch("Hello")); // true
-try std.testing.expect(try regex.isMatch("hello")); // true
-```
+### Important note on `unicode`
 
----
+`unicode` is **not** documented as a generic “all Unicode semantics enabled everywhere” switch.
 
-## Error Handling
+What it currently affects includes:
 
-All errors are defined in the `RegexError` error set:
+- Unicode-aware word-boundary policy (`\b`, `\B` via `text_policy`)
+- Unicode-aware `\d` / `\D`
+- compatibility with pattern-level `(*UCP)` / `(*UTF)` verbs, which currently set the same internal Unicode flag
 
-```zig
-pub const RegexError = error{
-    // Parse errors
-    InvalidPattern,
-    UnexpectedCharacter,
-    UnexpectedEndOfPattern,
-    InvalidEscapeSequence,
-    InvalidCharacterClass,
-    InvalidQuantifier,
-    UnmatchedParenthesis,
-    UnmatchedBracket,
-    EmptyPattern,
-
-    // Runtime errors
-    CompilationFailed,
-    TooManyStates,
-    OutOfMemory,
-};
-```
-
-**Error Handling Example:**
-```zig
-const regex = Regex.compile(allocator, "[invalid") catch |err| {
-    switch (err) {
-        RegexError.UnmatchedBracket => {
-            std.debug.print("Unclosed character class\n", .{});
-        },
-        RegexError.InvalidPattern => {
-            std.debug.print("Invalid regex pattern\n", .{});
-        },
-        else => {
-            std.debug.print("Error: {}\n", .{err});
-        },
-    }
-    return err;
-};
-```
+Do **not** assume every escape or class becomes Unicode-aware just because `.unicode = true`.
 
 ---
 
-## Pattern Syntax
+## Stable external flag-string contract
 
-### Literals
+This project now exposes **two intentional flag parsers** for two different jobs:
 
-- `a`, `b`, `1`, etc. - Match exact characters
+1. `common.CompileFlags.parse(flags_str)`
+   - native engine-facing parser
+   - preserves direct engine semantics
+   - `u` sets `.unicode = true`
 
-### Wildcards
+2. `common.MongoExternalOptions.parse(flags_str)`
+   - Mongo-compatible external `$options` parser for wrapper/integration layers
+   - canonicalizes flags for caching and transport-level equality
+   - accepts Mongo `u` but normalizes it away as redundant
 
-- `.` - Match any character (except newline by default)
+### `common.MongoExternalOptions.parse(flags_str)`
 
-### Quantifiers
+For integrations that accept an external option string (for example Mongo-style `$options` or SQLite helper wrappers), the supported external flag alphabet is:
 
-- `*` - Zero or more (greedy)
-- `+` - One or more (greedy)
-- `?` - Zero or one (optional)
-- `{n}` - Exactly n times
-- `{n,}` - n or more times
-- `{n,m}` - Between n and m times (inclusive)
+- `i`
+- `m`
+- `s`
+- `x`
+- `u`
 
-### Alternation
+### External flag rules
 
-- `|` - Match either left or right side
+- **Supported flags:** exactly `imsxu`
+- **Unknown flags:** hard error
+- **Order:** irrelevant
+- **Duplicates:** allowed and semantically ignored
+- **Mongo `u`:** accepted but treated as a redundant no-op by the Mongo parser
 
-### Character Classes
+Examples:
 
-- `[abc]` - Match any of a, b, or c
-- `[a-z]` - Match any lowercase letter
-- `[^abc]` - Match anything except a, b, or c
-- `\d` - Match any digit [0-9]
-- `\D` - Match any non-digit
-- `\w` - Match word character [a-zA-Z0-9_]
-- `\W` - Match non-word character
-- `\s` - Match whitespace [ \t\n\r]
-- `\S` - Match non-whitespace
+- `"im"` and `"mi"` are equivalent
+- `"ii"` is valid and equivalent to `"i"`
+- `"u"` is valid and canonicalizes to the empty canonical option string
+- `"g"` is invalid
+- `"y"` is invalid
 
-### Anchors
+### Canonicalization
 
-- `^` - Match start of string/line
-- `$` - Match end of string/line
-- `\b` - Match word boundary
-- `\B` - Match non-word boundary
+`MongoExternalOptions.parse(...)` produces:
 
-### Groups
+- `compile_flags` — the engine flags actually used for Mongo wrapper compilation
+- `canonicalSlice()` — a canonical cache-key-friendly representation using stable `i`, `m`, `s`, `x` order with redundant `u` removed
 
-- `(...)` - Capture group
+That means semantically equivalent Mongo option strings share the same cache identity:
 
-### Escaping
+- `"im"`
+- `"mi"`
+- `"iim"`
+- `"uim"`
 
-- `\\` - Literal backslash
-- `\.` - Literal dot
-- `\*` - Literal asterisk
-- `\+` - Literal plus
-- `\?` - Literal question mark
-- `\n` - Newline
-- `\t` - Tab
-- `\r` - Carriage return
+all canonicalize to the same effective option set.
 
----
+### Why this matters
 
-## Memory Management
+Wrapper layers should rely on this documented contract, **not** on incidental regex parser behavior.
 
-### Ownership Rules
+The wrapper should own only:
 
-1. **Regex object**: Caller owns the `Regex` returned by `compile()` and must call `deinit()`
-2. **Match objects**: Caller owns `Match` objects from `find()` and `findAll()` and must call `deinit()`
-3. **String results**: Caller owns strings returned by `replace()` and `replaceAll()` and must free
-4. **Arrays**: Caller owns arrays returned by `findAll()` and `split()` and must free
+- flag-string validation/canonicalization
+- cache key normalization
+- transport-specific error mapping
 
-### Best Practices
+The engine owns:
 
-```zig
-// Use defer for automatic cleanup
-var regex = try Regex.compile(allocator, pattern);
-defer regex.deinit();
-
-// Clean up match results
-if (try regex.find(input)) |match| {
-    var mut_match = match;
-    defer mut_match.deinit(allocator);
-    // Use match...
-}
-
-// Clean up arrays and their contents
-const matches = try regex.findAll(allocator, input);
-defer {
-    for (matches) |*match| {
-        var mut_match = match;
-        mut_match.deinit(allocator);
-    }
-    allocator.free(matches);
-}
-```
+- regex syntax
+- inline modifiers like `(?i)`
+- PCRE verbs like `(*UTF)` / `(*UCP)`
+- Unicode properties like `\p{Latin}`
+- lookaround, recursion, backreferences, and other pattern semantics
 
 ---
 
-## Performance Considerations
+## MongoDB-compatible wrapper contract
 
-### Time Complexity
+MongoDB documents `$options` with support for:
 
-- **Compilation**: O(p) where p is pattern length
-- **isMatch**: O(n × m) where n is input length, m is NFA state count
-- **find**: O(n × m × k) where k is number of positions to try
-- **findAll**: O(n × m) amortized
-- **replace/replaceAll**: O(n + r) where r is replacement length
+- `i`
+- `m`
+- `s`
+- `x`
+- `u`
 
-### Space Complexity
+MongoDB also documents `u` as **accepted but redundant because UTF is enabled by default**.
 
-- **NFA**: O(p) persistent storage
-- **VM execution**: O(m × c) where c is capture group count
-- **Results**: O(r) where r is result count
+### Current project status versus MongoDB
 
-### Optimization Tips
+The Mongo wrapper contract now follows that external-option rule explicitly:
 
-1. Compile patterns once and reuse them
-2. Use `isMatch()` when you only need a boolean result
-3. Prefer simpler patterns when possible
-4. Consider using character classes instead of alternation for single characters
+- `u` is accepted
+- `u` is redundant in the Mongo wrapper parse path
+- unknown flags are hard errors
+- duplicates are ignored
+- order is irrelevant
+- cache identity is based on canonicalized Mongo options, not raw input order
+
+This behavior is implemented through `common.MongoExternalOptions.parse(...)` and consumed by the SQLite/BSON wrapper path.
+
+### Recommended wrapper policy
+
+If your wrapper exposes a Mongo-style `flags` / `$options` string, the public contract is:
+
+1. Accept only `imsxu`
+2. Reject unknown options explicitly
+3. Canonicalize duplicates and order before caching
+4. Treat Mongo `u` as accepted but redundant
+5. Preserve regex pattern semantics as engine-owned
+
+### Important boundary
+
+This does **not** mean the native engine-facing `CompileFlags.parse(...)` path changed meaning.
+
+- native `CompileFlags.parse("u")` still enables the engine's internal `.unicode` flag
+- Mongo wrapper entrypoints should use `MongoExternalOptions.parse(...)`
+- direct engine users should choose the parser that matches their intended contract
 
 ---
 
-## Complete Example
+## Pattern-language ownership
+
+The following are **engine-owned**, not wrapper-owned:
+
+- inline modifiers: `(?i)`, `(?m)`, `(?s)`, `(?x)`, `(?-i)`
+- PCRE verbs: `(*UTF)`, `(*UCP)`
+- Unicode properties: `\p{...}`, `\P{...}`
+- lookahead/lookbehind
+- recursion and subroutines
+- backreferences and named captures
+- grapheme matching `\X`
+- anchor semantics such as `\A`, `\z`, `\Z`
+
+If an integration layer tries to parse or reinterpret these features independently, that is outside the intended architecture.
+
+---
+
+## Input validity guarantees
+
+### Patterns
+
+Patterns containing an internal null byte are invalid.
+
+### External flag strings
+
+External flag strings containing an internal null byte are invalid.
+
+### Unknown external flags
+
+Unknown external flags are invalid.
+
+---
+
+## Error model
+
+Public callers should assume the following high-level error categories may occur:
+
+- invalid pattern
+- invalid flags
+- invalid UTF-8 (where strict validation is required by the selected execution policy)
+- unsupported or not-yet-implemented regex feature
+- timeout / backtracking abort protection
+- allocation failure
+
+Do not write logic that depends on undocumented internal parser error distinctions unless you control both ends of the integration.
+
+---
+
+## Mongo-compatibility: honest status
+
+This repository is reasonably described as **Mongo-compatible in many important regex behaviors**, especially around:
+
+- PCRE-like syntax support
+- inline modifiers
+- Unicode properties and selected PCRE verbs
+- advanced constructs used in Mongo-derived edge cases
+- explicit erroring on invalid external flags
+
+However, if you want to claim strict Mongo parity for regex options and semantics, keep these gaps in mind:
+
+1. **Mongo-compatible external `u` now behaves as a redundant no-op only in the Mongo wrapper parse path**
+   - the native engine-facing `CompileFlags.parse("u")` path still intentionally enables `.unicode`
+2. **Unicode-mode behavior is still partial rather than globally uniform once inside engine semantics**
+   - for example `\d`/word boundaries are Unicode-sensitive under native `.unicode`, while other escapes are not clearly switched the same way
+3. **Some PCRE features remain intentionally unsupported or not implemented**
+   - e.g. script runs `(*sr:)`
+   - `(*BSR_UNICODE)`
+   - unsupported PCRE verbs such as `(*FAIL)`, `(*ACCEPT)`, `(*COMMIT)`
+4. **Companion wrapper behavior is not yet packaged and versioned as a first-class public API surface**
+5. **Documentation must be kept aligned with code and tests**
+   - stale docs are compatibility debt
+
+---
+
+## What would be needed to claim stronger Mongo compatibility
+
+To make the “mongo-compat” claim crisper and easier to defend publicly, the codebase should continue with the following:
+
+1. **Keep the split boundary explicit**
+   - Mongo wrapper entrypoints use `MongoExternalOptions.parse(...)`
+   - native engine callers use `CompileFlags.parse(...)` or typed `CompileFlags`
+
+2. **Audit Unicode-sensitive escapes/classes for consistency under Mongo expectations**
+   - especially `\w`, `\W`, and other classes if Mongo/PCRE/UCP expectations are part of the claim
+
+3. **Document wrapper/public API separately from internal engine APIs**
+   - the Zig module API and the SQLite/BSON helper contract should each have a stable document
+
+4. **Keep unsupported features explicitly listed**
+   - so “mongo-compat” never silently implies full PCRE2 parity
+
+5. **Add integration coverage for canonical Mongo option handling**
+   - e.g. `"mi" == "im"`
+   - duplicate options reuse the same semantics
+   - `u` matches the same as no options in Mongo wrapper mode
+
+---
+
+## Minimal examples
+
+### Basic compile and match
 
 ```zig
 const std = @import("std");
-const Regex = @import("regex").Regex;
+const regex = @import("regex");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "basic match" {
+    const allocator = std.testing.allocator;
 
-    // Email validation pattern
-    var regex = try Regex.compile(
-        allocator,
-        "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-    );
-    defer regex.deinit();
+    var re = try regex.Regex.compile(allocator, "abc");
+    defer re.deinit();
 
-    const emails = [_][]const u8{
-        "user@example.com",
-        "invalid.email",
-        "test.user+tag@example.co.uk",
-    };
+    try std.testing.expect(try re.isMatch("xyzabcxyz"));
+}
+```
 
-    for (emails) |email| {
-        if (try regex.isMatch(email)) {
-            std.debug.print("✓ Valid: {s}\n", .{email});
-        } else {
-            std.debug.print("✗ Invalid: {s}\n", .{email});
-        }
-    }
+### Top-level flags
+
+```zig
+const std = @import("std");
+const regex = @import("regex");
+
+test "top-level flags" {
+    const allocator = std.testing.allocator;
+
+    var re = try regex.Regex.compileWithFlags(allocator, "^a.b$", .{
+        .case_insensitive = true,
+        .multiline = true,
+        .dot_all = true,
+    });
+    defer re.deinit();
+
+    try std.testing.expect(try re.isMatch("A\nB"));
+}
+```
+
+### External flag parsing
+
+```zig
+const std = @import("std");
+const regex = @import("regex");
+
+test "external flags contract" {
+    const flags = try regex.common.CompileFlags.parse("imsu");
+    try std.testing.expect(flags.case_insensitive);
+    try std.testing.expect(flags.multiline);
+    try std.testing.expect(flags.dot_all);
+    try std.testing.expect(flags.unicode);
+    try std.testing.expectError(error.InvalidFlags, regex.common.CompileFlags.parse("g"));
 }
 ```
 
 ---
 
-**Last Updated:** 2025-01-26
-**Version:** 0.1.0
-**Zig Version:** 0.15.1
+## Source of truth
+
+When this document and other prose disagree:
+
+1. `src/root.zig` defines the exported Zig module surface
+2. `src/common.zig` defines the external top-level flag parser contract
+3. engine behavior in `src/parser.zig`, `src/regex.zig`, `src/text_policy.zig`, and matching engines defines actual regex semantics
+4. integration wrappers should document only the subset they intentionally expose
+
+---
+
+**Last updated:** 2026-03-30

@@ -136,7 +136,7 @@ pub const CharClass = struct {
     }
 };
 
-/// Regex compilation flags
+/// Regex compilation flags used by the native engine-facing API.
 pub const CompileFlags = packed struct {
     case_insensitive: bool = false,
     multiline: bool = false,
@@ -144,7 +144,11 @@ pub const CompileFlags = packed struct {
     extended: bool = false,
     unicode: bool = false,
 
-    /// Parses standard regex string flags (e.g. "imx") into a CompileFlags struct.
+    /// Parses native engine string flags (e.g. "imxu") into a CompileFlags struct.
+    ///
+    /// This parser preserves the engine's direct flag semantics, including `u` enabling
+    /// the internal unicode flag. Mongo-compatible wrapper layers should prefer
+    /// `MongoExternalOptions.parse(...)` instead of relying on this native parser.
     pub fn parse(flags_str: []const u8) !CompileFlags {
         var flags = CompileFlags{};
         for (flags_str) |ch| {
@@ -161,7 +165,63 @@ pub const CompileFlags = packed struct {
     }
 };
 
-test "CompileFlags.parse" {
+/// Canonical Mongo-facing external options.
+///
+/// MongoDB accepts `i`, `m`, `s`, `x`, and `u`, but documents `u` as redundant because
+/// UTF support is enabled by default. This parser enforces that contract:
+/// - unknown flags error
+/// - duplicate flags are ignored
+/// - order is irrelevant
+/// - `u` is accepted but normalized away as a no-op
+pub const MongoExternalOptions = struct {
+    pub const max_canonical_len: usize = 4; // i, m, s, x. Mongo `u` is accepted but canonicalized away.
+
+    compile_flags: CompileFlags,
+    canonical: [max_canonical_len]u8 = undefined,
+    canonical_len: usize = 0,
+
+    pub fn parse(flags_str: []const u8) !MongoExternalOptions {
+        var result = MongoExternalOptions{ .compile_flags = .{} };
+
+        for (flags_str) |ch| {
+            switch (ch) {
+                'i' => result.compile_flags.case_insensitive = true,
+                'm' => result.compile_flags.multiline = true,
+                's' => result.compile_flags.dot_all = true,
+                'x' => result.compile_flags.extended = true,
+                'u' => {}, // Accepted for Mongo compatibility, but redundant.
+                else => return error.InvalidFlags,
+            }
+        }
+
+        var len: usize = 0;
+        if (result.compile_flags.case_insensitive) {
+            result.canonical[len] = 'i';
+            len += 1;
+        }
+        if (result.compile_flags.multiline) {
+            result.canonical[len] = 'm';
+            len += 1;
+        }
+        if (result.compile_flags.dot_all) {
+            result.canonical[len] = 's';
+            len += 1;
+        }
+        if (result.compile_flags.extended) {
+            result.canonical[len] = 'x';
+            len += 1;
+        }
+        result.canonical_len = len;
+
+        return result;
+    }
+
+    pub fn canonicalSlice(self: *const MongoExternalOptions) []const u8 {
+        return self.canonical[0..self.canonical_len];
+    }
+};
+
+test "CompileFlags.parse preserves native unicode flag semantics" {
     const flags1 = try CompileFlags.parse("imx");
     try std.testing.expect(flags1.case_insensitive);
     try std.testing.expect(flags1.multiline);
@@ -175,6 +235,31 @@ test "CompileFlags.parse" {
     try std.testing.expect(flags2.unicode);
 
     try std.testing.expectError(error.InvalidFlags, CompileFlags.parse("imZ"));
+}
+
+test "MongoExternalOptions.parse canonicalizes and strips redundant u" {
+    const parsed = try MongoExternalOptions.parse("usmiiu");
+    try std.testing.expect(parsed.compile_flags.case_insensitive);
+    try std.testing.expect(parsed.compile_flags.multiline);
+    try std.testing.expect(parsed.compile_flags.dot_all);
+    try std.testing.expect(!parsed.compile_flags.extended);
+    try std.testing.expect(!parsed.compile_flags.unicode);
+    try std.testing.expectEqualStrings("ims", parsed.canonicalSlice());
+}
+
+test "MongoExternalOptions.parse treats u as redundant no-op" {
+    const parsed = try MongoExternalOptions.parse("u");
+    try std.testing.expect(!parsed.compile_flags.case_insensitive);
+    try std.testing.expect(!parsed.compile_flags.multiline);
+    try std.testing.expect(!parsed.compile_flags.dot_all);
+    try std.testing.expect(!parsed.compile_flags.extended);
+    try std.testing.expect(!parsed.compile_flags.unicode);
+    try std.testing.expectEqualStrings("", parsed.canonicalSlice());
+}
+
+test "MongoExternalOptions.parse rejects invalid flags" {
+    try std.testing.expectError(error.InvalidFlags, MongoExternalOptions.parse("g"));
+    try std.testing.expectError(error.InvalidFlags, MongoExternalOptions.parse("imyZ"));
 }
 
 /// Comptime helper for creating precomputed static CharClasses
