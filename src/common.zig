@@ -45,6 +45,7 @@ pub const CharClass = struct {
         digit,
         letter,
         alnum,
+        word,
         any,
         script: Script,
 
@@ -61,10 +62,12 @@ pub const CharClass = struct {
             if (self.unicode_property) |prop| {
                 const unicode = @import("unicode.zig");
                 const unicode_properties = @import("unicode_properties.zig");
+                const unicode_tables = @import("unicode_tables.zig");
                 is_match = switch (prop) {
                     .digit => unicode.isDigit(char_val),
                     .letter => unicode.isLetter(char_val),
                     .alnum => unicode.isAlphanumeric(char_val),
+                    .word => unicode_tables.isWordChar(char_val, true),
                     .any => true,
                     .script => |s| unicode_properties.matchesScript(char_val, s),
                 };
@@ -94,10 +97,12 @@ pub const CharClass = struct {
         if (self.unicode_property) |prop| {
             const unicode = @import("unicode.zig");
             const unicode_properties = @import("unicode_properties.zig");
+            const unicode_tables = @import("unicode_tables.zig");
             const prop_match = switch (prop) {
                 .digit => unicode.isDigit(c),
                 .letter => unicode.isLetter(c),
                 .alnum => unicode.isAlphanumeric(c),
+                .word => unicode_tables.isWordChar(c, true),
                 .any => true,
                 .script => |s| unicode_properties.matchesScript(c, s),
             };

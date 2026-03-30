@@ -182,49 +182,11 @@ pub const GeneralCategory = enum {
     Cn, // Other, not assigned
 };
 
-/// Get the Unicode General Category for a codepoint
-/// This is a simplified implementation covering common ranges
+/// Get the Unicode General Category for a codepoint.
+/// Delegates to the generated staged Unicode lookup tables.
 pub fn getGeneralCategory(cp: Codepoint) GeneralCategory {
-    // ASCII fast path
-    if (cp < 0x80) {
-        if (cp >= 'A' and cp <= 'Z') return .Lu;
-        if (cp >= 'a' and cp <= 'z') return .Ll;
-        if (cp >= '0' and cp <= '9') return .Nd;
-        if (cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r') return .Zs;
-        if (cp <= 0x1F or cp == 0x7F) return .Cc;
-        // Punctuation and symbols
-        if ((cp >= 0x21 and cp <= 0x2F) or (cp >= 0x3A and cp <= 0x40) or
-            (cp >= 0x5B and cp <= 0x60) or (cp >= 0x7B and cp <= 0x7E))
-        {
-            // Simplified: treat all as punctuation
-            return .Po;
-        }
-        return .Cn;
-    }
-
-    // Latin-1 Supplement (0x80-0xFF)
-    if (cp <= 0xFF) {
-        if (cp >= 0xC0 and cp <= 0xD6) return .Lu;
-        if (cp >= 0xD8 and cp <= 0xDE) return .Lu;
-        if (cp >= 0xE0 and cp <= 0xF6) return .Ll;
-        if (cp >= 0xF8 and cp <= 0xFF) return .Ll;
-        if (cp >= 0x80 and cp <= 0x9F) return .Cc;
-        if (cp == 0xA0) return .Zs;
-        return .Po; // Simplified for other Latin-1 symbols
-    }
-
-    // Basic Multilingual Plane (BMP) ranges
-    // This is a simplified categorization
-    if (cp >= 0x0100 and cp <= 0x017F) return .Ll; // Latin Extended-A (simplified)
-    if (cp >= 0x0180 and cp <= 0x024F) return .Ll; // Latin Extended-B (simplified)
-    if (cp >= 0x0370 and cp <= 0x03FF) return .Ll; // Greek (simplified)
-    if (cp >= 0x0400 and cp <= 0x04FF) return .Ll; // Cyrillic (simplified)
-    if (cp >= 0x0600 and cp <= 0x06FF) return .Lo; // Arabic
-    if (cp >= 0x4E00 and cp <= 0x9FFF) return .Lo; // CJK Unified Ideographs
-    if (cp >= 0xAC00 and cp <= 0xD7AF) return .Lo; // Hangul Syllables
-
-    // Default to unassigned for anything else
-    return .Cn;
+    const unicode_tables = @import("unicode_tables.zig");
+    return @as(GeneralCategory, @enumFromInt(@intFromEnum(unicode_tables.getGeneralCategory(cp))));
 }
 
 /// Check if a codepoint is in a Unicode category
@@ -234,12 +196,10 @@ pub fn isInCategory(cp: Codepoint, category: GeneralCategory) bool {
 
 /// Check if a codepoint is a letter
 pub fn isLetter(cp: Codepoint) bool {
-    if (cp < 128) {
-        return (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z');
-    }
-    const unicode_tables = @import("unicode_tables.zig");
-    const rec = unicode_tables.getUcdRecord(cp);
-    return rec.category >= 0 and rec.category <= 4; // Lu, Ll, Lt, Lm, Lo
+    return switch (getGeneralCategory(cp)) {
+        .Lu, .Ll, .Lt, .Lm, .Lo => true,
+        else => false,
+    };
 }
 
 pub fn isDigit(cp: Codepoint) bool {

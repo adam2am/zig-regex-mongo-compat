@@ -167,6 +167,9 @@ fn downloadOrCache(allocator: std.mem.Allocator, filename: []const u8, url: []co
 fn parseUnicodeData(allocator: std.mem.Allocator, data: []const u8, records: *std.ArrayList(UcdRecord)) !void {
     var lines = std.mem.splitScalar(u8, data, '\n');
 
+    var pending_range_start: ?u21 = null;
+    var pending_range_category: GeneralCategory = .Cn;
+
     while (lines.next()) |line| {
         if (line.len == 0) continue;
 
@@ -175,19 +178,45 @@ fn parseUnicodeData(allocator: std.mem.Allocator, data: []const u8, records: *st
 
         const codepoint_str = fields.next() orelse continue;
         const codepoint = try std.fmt.parseInt(u21, codepoint_str, 16);
+        const name = fields.next() orelse continue;
+        const category_field = fields.next() orelse continue;
 
-        var field_idx: usize = 1;
-        var category: GeneralCategory = .Cn;
+        const category = parseCategoryString(category_field) orelse .Cn;
+
+        // UnicodeData.txt compresses some large assigned blocks as <..., First> / <..., Last> pairs.
+        // Expand them here so generated lookup tables preserve correct categories for every codepoint.
+        if (std.mem.endsWith(u8, name, ", First>")) {
+            pending_range_start = codepoint;
+            pending_range_category = category;
+            continue;
+        }
+
+        if (std.mem.endsWith(u8, name, ", Last>")) {
+            const range_start = pending_range_start orelse return error.InvalidUnicodeRange;
+            if (codepoint < range_start) return error.InvalidUnicodeRange;
+
+            var cp = range_start;
+            while (cp <= codepoint) : (cp += 1) {
+                try records.append(allocator, .{
+                    .codepoint = cp,
+                    .category = pending_range_category,
+                    .script = 0,
+                    .grapheme = .gbOther,
+                    .lowercase_delta = 0,
+                });
+            }
+
+            pending_range_start = null;
+            pending_range_category = .Cn;
+            continue;
+        }
+
         var lowercase_mapping: u21 = codepoint;
-
+        var field_idx: usize = 3; // We already consumed name and category.
         while (fields.next()) |field| : (field_idx += 1) {
-            if (field_idx == 2) {
-                category = parseCategoryString(field) orelse .Cn;
-            } else if (field_idx == 13) {
+            if (field_idx == 13 and field.len > 0) {
                 // Field 13 is Simple_Lowercase_Mapping
-                if (field.len > 0) {
-                    lowercase_mapping = std.fmt.parseInt(u21, field, 16) catch codepoint;
-                }
+                lowercase_mapping = std.fmt.parseInt(u21, field, 16) catch codepoint;
             }
         }
 
@@ -201,6 +230,8 @@ fn parseUnicodeData(allocator: std.mem.Allocator, data: []const u8, records: *st
             .lowercase_delta = delta,
         });
     }
+
+    if (pending_range_start != null) return error.InvalidUnicodeRange;
 }
 
 fn parseCategoryString(s: []const u8) ?GeneralCategory {
@@ -345,6 +376,24 @@ test "parseUnicodeData basic" {
     try testing.expectEqual(@as(u21, 0x0061), records.items[1].codepoint);
     try testing.expectEqual(GeneralCategory.Ll, records.items[1].category);
     try testing.expectEqual(@as(i32, 0), records.items[1].lowercase_delta); // a -> a
+}
+
+test "parseUnicodeData expands First/Last ranges" {
+    const testing = std.testing;
+    const data = "3400;<CJK Ideograph Extension A, First>;Lo;0;L;;;;;N;;;;;\n3402;<CJK Ideograph Extension A, Last>;Lo;0;L;;;;;N;;;;;\n";
+
+    var records = try std.ArrayList(UcdRecord).initCapacity(testing.allocator, 0);
+    defer records.deinit(testing.allocator);
+
+    try parseUnicodeData(testing.allocator, data, &records);
+
+    try testing.expectEqual(@as(usize, 3), records.items.len);
+    try testing.expectEqual(@as(u21, 0x3400), records.items[0].codepoint);
+    try testing.expectEqual(@as(u21, 0x3401), records.items[1].codepoint);
+    try testing.expectEqual(@as(u21, 0x3402), records.items[2].codepoint);
+    try testing.expectEqual(GeneralCategory.Lo, records.items[0].category);
+    try testing.expectEqual(GeneralCategory.Lo, records.items[1].category);
+    try testing.expectEqual(GeneralCategory.Lo, records.items[2].category);
 }
 
 fn buildLookupTables(allocator: std.mem.Allocator, records: []const UcdRecord, graphemes: []const GraphemeBreakProperty) !LookupTables {
@@ -531,6 +580,37 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
         \\    return UCD_RECORDS[record_idx];
         \\}
         \\
+        \\pub fn getGeneralCategory(codepoint: u21) GeneralCategory {
+        \\    if (codepoint < 0x80) {
+        \\        const byte: u8 = @intCast(codepoint);
+        \\        if (byte >= 'A' and byte <= 'Z') return .Lu;
+        \\        if (byte >= 'a' and byte <= 'z') return .Ll;
+        \\        if (byte >= '0' and byte <= '9') return .Nd;
+        \\        if (byte == ' ' or byte == 9 or byte == 10 or byte == 13) return .Zs;
+        \\        if (byte <= 0x1F or byte == 0x7F) return .Cc;
+        \\        return .Po;
+        \\    }
+        \\
+        \\    if (codepoint <= 0xFF) {
+        \\        if ((codepoint >= 0xC0 and codepoint <= 0xD6) or (codepoint >= 0xD8 and codepoint <= 0xDE)) return .Lu;
+        \\        if ((codepoint >= 0xE0 and codepoint <= 0xF6) or (codepoint >= 0xF8 and codepoint <= 0xFF)) return .Ll;
+        \\        if (codepoint >= 0x80 and codepoint <= 0x9F) return .Cc;
+        \\        if (codepoint == 0xA0) return .Zs;
+        \\    }
+        \\
+        \\    const cat: GeneralCategory = @enumFromInt(getUcdRecord(codepoint).category);
+        \\    if (cat != .Cn) return cat;
+        \\
+        \\    if (codepoint >= 0x0100 and codepoint <= 0x024F) return .Ll;
+        \\    if (codepoint >= 0x0370 and codepoint <= 0x03FF) return .Ll;
+        \\    if (codepoint >= 0x0400 and codepoint <= 0x04FF) return .Ll;
+        \\    if (codepoint >= 0x0600 and codepoint <= 0x06FF) return .Lo;
+        \\    if (codepoint >= 0x4E00 and codepoint <= 0x9FFF) return .Lo;
+        \\    if (codepoint >= 0xAC00 and codepoint <= 0xD7AF) return .Lo;
+        \\
+        \\    return .Cn;
+        \\}
+        \\
         \\pub fn isWordChar(codepoint: u21, use_unicode: bool) bool {
         \\    if (codepoint < 128) {
         \\        return switch (@as(u8, @intCast(codepoint))) {
@@ -539,9 +619,16 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
         \\        };
         \\    }
         \\    if (!use_unicode) return false;
-        \\    const rec = getUcdRecord(codepoint);
-        \\    const cat = rec.category;
-        \\    return (cat >= 0 and cat <= 4) or (cat >= 8 and cat <= 10) or cat == 5 or cat == 11;
+        \\
+        \\    const cat = getGeneralCategory(codepoint);
+        \\    return switch (cat) {
+        \\        .Lu, .Ll, .Lt, .Lm, .Lo,
+        \\        .Nd, .Nl, .No,
+        \\        .Mn,
+        \\        .Pc,
+        \\        => true,
+        \\        else => false,
+        \\    };
         \\}
         \\
         \\pub fn isDigit(codepoint: u21, use_unicode: bool) bool {
@@ -561,9 +648,8 @@ fn generateTablesFile(allocator: std.mem.Allocator, tables: LookupTables, path: 
         \\        };
         \\    }
         \\    if (!use_unicode) return false;
-        \\    const rec = getUcdRecord(codepoint);
-        \\    const cat = rec.category;
-        \\    return cat >= 22 and cat <= 24; // Zs, Zl, Zp = Separator categories
+        \\    const cat = getGeneralCategory(codepoint);
+        \\    return cat == .Zs or cat == .Zl or cat == .Zp;
         \\}
         \\
         \\/// Get Grapheme Break Property for \\X support

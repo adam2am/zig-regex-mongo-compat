@@ -818,10 +818,26 @@ pub const Parser = struct {
             },
             .escape_w => {
                 try self.advance();
+                const flags = self.currentFlags();
+                if (flags.unicode) {
+                    return ast.Node.createCharClass(self.astAllocator(), .{
+                        .ranges = &[_]common.CharRange{},
+                        .negated = false,
+                        .unicode_property = .word,
+                    }, flags.case_insensitive, token.span);
+                }
                 return self.createCharClassFromEscape("word", token);
             },
             .escape_W => {
                 try self.advance();
+                const flags = self.currentFlags();
+                if (flags.unicode) {
+                    return ast.Node.createCharClass(self.astAllocator(), .{
+                        .ranges = &[_]common.CharRange{},
+                        .negated = true,
+                        .unicode_property = .word,
+                    }, flags.case_insensitive, token.span);
+                }
                 return self.createCharClassFromEscape("non_word", token);
             },
             .escape_s => {

@@ -307,6 +307,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_extended_mode_comments_tests = b.addRunArtifact(extended_mode_comments_tests);
 
+    const unicode_word_classes_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unicode_word_classes.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_unicode_word_classes_tests = b.addRunArtifact(unicode_word_classes_tests);
+
     const debug_inline_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/debug_inline.zig"),
@@ -508,6 +520,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_named_captures_tests.step);
     test_step.dependOn(&run_inline_modifiers_tests.step);
     test_step.dependOn(&run_extended_mode_comments_tests.step);
+    test_step.dependOn(&run_unicode_word_classes_tests.step);
     test_step.dependOn(&run_debug_inline_tests.step);
     test_step.dependOn(&run_unicode_debug_tests.step);
     test_step.dependOn(&run_test_90_debug.step);
@@ -813,6 +826,9 @@ pub fn build(b: *std.Build) void {
 
     const test_extended_mode_comments_step = b.step("test-extended-mode-comments", "Run extended_mode_comments tests");
     test_extended_mode_comments_step.dependOn(&run_extended_mode_comments_tests.step);
+
+    const test_unicode_word_classes_step = b.step("test-unicode-word-classes", "Run unicode_word_classes tests");
+    test_unicode_word_classes_step.dependOn(&run_unicode_word_classes_tests.step);
 
     const test_parser_edge_cases_step = b.step("test-parser-edge-cases", "Run parser_compiler_edge_cases tests");
     test_parser_edge_cases_step.dependOn(&run_parser_compiler_edge_cases_tests.step);

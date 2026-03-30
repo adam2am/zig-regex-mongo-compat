@@ -216,24 +216,20 @@ test "UTF-8: dot matches multi-byte characters" {
     try std.testing.expect(try regex.isMatch("你")); // 你 is 3 bytes
 }
 
-test "UTF-8: known limitation - \\w is ASCII-only" {
+test "UTF-8: default \\w remains ASCII-only without unicode mode" {
     const allocator = std.testing.allocator;
     var regex = try Regex.compile(allocator, "\\w+");
     defer regex.deinit();
 
-    // ASCII word characters work
     try std.testing.expect(try regex.isMatch("hello"));
     try std.testing.expect(try regex.isMatch("test123"));
 
-    // Non-ASCII letters currently don't match \w
-    // In Unicode mode, \w should match Unicode letters
     const result = try regex.find("café");
     if (result) |match| {
         defer {
             var mut_match = match;
             mut_match.deinit(allocator);
         }
-        // Currently only matches "caf", not "café"
         try std.testing.expectEqualStrings("caf", match.slice);
     }
 }

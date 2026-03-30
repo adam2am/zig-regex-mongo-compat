@@ -1,19 +1,20 @@
 # Public API
 
-This document defines the **supported public API** for `zig-regex-mongo-compat`.
+This document describes the **current public API** of the `zig-regex-mongo-compat` package as exported by `src/root.zig`.
 
-It exists to answer two questions explicitly:
+It answers three concrete questions:
 
-1. **What is publicly exposed by the Zig package?**
-2. **What external regex flag contract is stable for Mongo-compatible integrations?**
+1. **What does `@import("regex")` expose?**
+2. **Which APIs are intended for normal callers?**
+3. **What are the current top-level flag and matching semantics?**
 
-If behavior is not described here, do **not** treat it as stable API just because the current parser happens to accept it.
+If behavior is not described here, do **not** treat it as stable public contract just because the current implementation happens to allow it.
 
 ---
 
 ## Package boundary
 
-The `zig build` package exports the Zig module:
+The Zig package exports a single public module:
 
 ```zig
 const regex = @import("regex");
@@ -21,9 +22,17 @@ const regex = @import("regex");
 
 The public root is `src/root.zig`.
 
-### Publicly exported module surface
+This package documents the **Zig library API** and the **embedded C API** exposed from this repository.
 
-The package currently re-exports these declarations from `src/root.zig`:
+This document does **not** define the contract of external wrapper repositories or downstream database integration layers.
+
+---
+
+## Public module surface
+
+The package currently re-exports the following declarations from `src/root.zig`.
+
+### Core matching types
 
 - `Regex`
 - `Match`
@@ -31,52 +40,101 @@ The package currently re-exports these declarations from `src/root.zig`:
 - `MatchCapture`
 - `ExecutionSession`
 - `SessionIterator`
-- `Matcher` (compatibility alias)
+- `Matcher`
 - `RegexError`
 - `ErrorContext`
 - `ErrorHelper`
+
+### Performance and profiling
+
 - `Profiler`
 - `ScopedTimer`
+
+### Thread-safety helpers
+
+- `thread_safety`
 - `SharedRegex`
 - `RegexCache`
+
+### Builder and composition APIs
+
 - `Builder`
 - `Patterns`
 - `Composer`
+
+### Analysis, linting, and diagnostics
+
 - `Lint`
 - `ComplexityAnalyzer`
-- `MacroRegistry`
-- `CommonMacros`
 - `ASTOptimizer`
 - `PrettyPrinter`
 - `ASTStats`
 - `NFAOptimizer`
 - `NFAVisualizer`
-- `NamedCaptureRegistry`
-- `NamedMatch`
-- `UnicodeProperty`
-- `Script`
-- `AtomicGroupNode`
-- `ConditionalNode`
-- `PossessiveQuantifier`
+- `pattern_analyzer`
 - `PatternAnalyzer`
 - `AnalysisResult`
 - `RiskLevel`
 - `analyzePattern`
 - `analyzeAndValidate`
+
+### Macros and advanced features
+
+- `macros`
+- `MacroRegistry`
+- `CommonMacros`
+- `named_captures`
+- `NamedCaptureRegistry`
+- `NamedMatch`
+- `unicode`
+- `UnicodeProperty`
+- `unicode_properties`
+- `Script`
+- `advanced`
+- `AtomicGroupNode`
+- `ConditionalNode`
+- `PossessiveQuantifier`
+
+### C API and lower-level modules
+
 - `c_api`
-- internal/advanced namespaces re-exported for power users: `common`, `parser`, `compiler`, `optimizer`, `backtrack`, `text_policy`, `debug`, `profiling`, `unicode`, `unicode_properties`, `advanced`, `named_captures`, `pattern_analyzer`, `macros`, `thread_safety`
-
-### Not part of the packaged Zig module API
-
-The SQLite/BSON helper integration code (`bson_regex(...)`, `puresqlite_regex(...)`, SQLite extension entrypoints, JSON-path extraction, wrapper cache behavior) is **companion integration code**, not part of the package built by `build.zig`.
-
-That code may be documented here for interoperability, but it should be treated as a **wrapper contract**, not as the core Zig package API.
+- `common`
+- `parser`
+- `compiler`
+- `optimizer`
+- `backtrack`
+- `text_policy`
+- `debug`
+- `profiling`
+- `version`
 
 ---
 
-## Core type: `Regex`
+## Recommended entry points
 
-`Regex` is the primary compiled regex type.
+Most callers should start with:
+
+- `Regex.compile(...)`
+- `Regex.compileWithFlags(...)`
+- `Regex.isMatch(...)`
+- `Regex.find(...)`
+- `Regex.findAll(...)`
+- `Regex.replace(...)`
+- `Regex.replaceAll(...)`
+- `Regex.split(...)`
+
+For repeated matching with less allocation pressure, prefer:
+
+- `Regex.session(...)`
+- `Regex.matchBuffer(...)`
+- `ExecutionSession.findInto(...)`
+- `ExecutionSession.iterator(...)`
+
+---
+
+## `Regex`
+
+`Regex` is the main compiled regex type.
 
 ### Compile
 
@@ -85,27 +143,8 @@ pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !Regex
 pub fn compileWithFlags(allocator: std.mem.Allocator, pattern: []const u8, flags: common.CompileFlags) !Regex
 ```
 
-Use `compile()` for default behavior and `compileWithFlags()` when you need explicit top-level flags.
-
-#### Example
-
-```zig
-const std = @import("std");
-const regex = @import("regex");
-
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-
-    var re = try regex.Regex.compileWithFlags(allocator, "^hello", .{
-        .case_insensitive = true,
-        .multiline = true,
-    });
-    defer re.deinit();
-
-    const ok = try re.isMatch("HELLO\nworld");
-    _ = ok;
-}
-```
+Use `compile()` when you want default behavior.
+Use `compileWithFlags()` when you want explicit top-level flags.
 
 ### Lifetime
 
@@ -115,21 +154,24 @@ pub fn deinit(self: *Regex) void
 
 Always call `deinit()` on a compiled regex.
 
-### Matching/search APIs
+### Basic matching/searching
 
 ```zig
 pub fn isMatch(self: *const Regex, input: []const u8) !bool
 pub fn find(self: *const Regex, input: []const u8) !?Match
 pub fn findInto(self: *const Regex, input: []const u8, buffer: *MatchBuffer) !bool
 pub fn findAll(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![]Match
+```
+
+### Replacement and splitting
+
+```zig
 pub fn replace(self: *const Regex, allocator: std.mem.Allocator, input: []const u8, replacement: []const u8) ![]u8
 pub fn replaceAll(self: *const Regex, allocator: std.mem.Allocator, input: []const u8, replacement: []const u8) ![]u8
 pub fn split(self: *const Regex, allocator: std.mem.Allocator, input: []const u8) ![][]const u8
 ```
 
 ### Session-oriented API
-
-For repeated matching, prefer creating a reusable session:
 
 ```zig
 pub fn session(self: *const Regex, allocator: std.mem.Allocator) !ExecutionSession
@@ -138,7 +180,18 @@ pub fn matcher(self: *const Regex, allocator: std.mem.Allocator) !Matcher
 pub fn iterator(self: *const Regex, input: []const u8) MatchIterator
 ```
 
-`Matcher` is a compatibility alias for `ExecutionSession`.
+`matcher()` is a compatibility wrapper around `session()`.
+
+`Regex.iterator(...)` provides an allocating iterator convenience API.
+The concrete `MatchIterator` type is part of `regex.zig`, but it is not separately re-exported from `src/root.zig`; most callers should rely on type inference here.
+For tighter loops and reusable scratch space, prefer `ExecutionSession.iterator(...)` plus `MatchBuffer`.
+
+### Named captures
+
+```zig
+pub fn getCaptureIndex(self: *const Regex, name: []const u8) ?usize
+pub fn getNamedCapture(self: *const Regex, match: *const Match, name: []const u8) ?[]const u8
+```
 
 ---
 
@@ -146,10 +199,10 @@ pub fn iterator(self: *const Regex, input: []const u8) MatchIterator
 
 A `Match` contains:
 
-- `slice`: the matched text
-- `start`: byte start offset
-- `end`: byte end offset
-- `captures`: capture texts for numbered groups
+- `slice` — matched text
+- `start` — byte start offset
+- `end` — byte end offset
+- `captures` — capture texts for numbered groups
 
 ```zig
 pub fn deinit(self: Match, allocator: std.mem.Allocator) void
@@ -157,9 +210,53 @@ pub fn deinit(self: Match, allocator: std.mem.Allocator) void
 
 ---
 
+## `ExecutionSession`
+
+`ExecutionSession` is the reusable matching session type returned by `Regex.session(...)`.
+
+### Construction
+
+```zig
+pub fn session(self: *const Regex, allocator: std.mem.Allocator) !ExecutionSession
+```
+
+### Session methods
+
+```zig
+pub fn deinit(self: *ExecutionSession) void
+pub fn setMaxSteps(self: *ExecutionSession, max_steps: usize) void
+pub fn iterator(self: *ExecutionSession, input: []const u8) SessionIterator
+pub fn isMatch(self: *ExecutionSession, input: []const u8) !bool
+pub fn find(self: *ExecutionSession, input: []const u8) !?Match
+pub fn findInto(self: *ExecutionSession, input: []const u8, buffer: *MatchBuffer) !bool
+```
+
+Notes:
+
+- `setMaxSteps()` only affects the backtracking engine path.
+- `Matcher` is a compatibility alias for `ExecutionSession`.
+
+---
+
+## `SessionIterator`
+
+`SessionIterator` is the reusable iterator returned by `ExecutionSession.iterator(...)`.
+
+It supports:
+
+```zig
+pub fn reset(self: *SessionIterator) void
+pub fn nextInto(self: *SessionIterator, buffer: *MatchBuffer) !bool
+pub fn next(self: *SessionIterator, allocator: std.mem.Allocator) !?Match
+```
+
+Use `nextInto(...)` with a reusable `MatchBuffer` for the lowest allocation overhead.
+
+---
+
 ## Compile flags
 
-The top-level flag structure is:
+Top-level flags are represented by:
 
 ```zig
 pub const CompileFlags = packed struct {
@@ -171,47 +268,30 @@ pub const CompileFlags = packed struct {
 }
 ```
 
-These flags are **implemented today**.
-
-### Semantics
+### Current top-level flag semantics
 
 - `case_insensitive` — case-insensitive matching
 - `multiline` — `^` and `$` operate on line boundaries
 - `dot_all` — `.` matches newlines
-- `extended` — insignificant whitespace and `# ... end-of-line` comments are skipped by the lexer in extended mode outside character classes
-- `unicode` — enables Unicode-sensitive behavior currently used by parts of text policy and selected escapes
+- `extended` — insignificant whitespace and `# ... end-of-line` comments are skipped by the lexer in extended mode outside character classes and outside `\Q...\E` literal sections
+- `unicode` — enables the engine's current internal Unicode-sensitive behavior
 
 ### Important note on `unicode`
 
-`unicode` is **not** documented as a generic “all Unicode semantics enabled everywhere” switch.
+`unicode` is **not** documented as a universal “full Unicode mode for everything” switch.
 
 What it currently affects includes:
 
-- Unicode-aware word-boundary policy (`\b`, `\B` via `text_policy`)
-- Unicode-aware `\d` / `\D`
+- Unicode-aware word-boundary policy (`\\b`, `\\B` via `text_policy`)
+- Unicode-aware `\\d` / `\\D`
+- Unicode-aware `\\w` / `\\W`
 - compatibility with pattern-level `(*UCP)` / `(*UTF)` verbs, which currently set the same internal Unicode flag
 
-Do **not** assume every escape or class becomes Unicode-aware just because `.unicode = true`.
+Do **not** assume every escape or class becomes Unicode-aware just because `.unicode = true`, but `\\d`, `\\D`, `\\w`, `\\W`, `\\b`, and `\\B` are now aligned with the current internal Unicode word/digit policies.
 
----
+### Native string flag parsing
 
-## Stable external flag-string contract
-
-This project now exposes **two intentional flag parsers** for two different jobs:
-
-1. `common.CompileFlags.parse(flags_str)`
-   - native engine-facing parser
-   - preserves direct engine semantics
-   - `u` sets `.unicode = true`
-
-2. `common.MongoExternalOptions.parse(flags_str)`
-   - Mongo-compatible external `$options` parser for wrapper/integration layers
-   - canonicalizes flags for caching and transport-level equality
-   - accepts Mongo `u` but normalizes it away as redundant
-
-### `common.MongoExternalOptions.parse(flags_str)`
-
-For integrations that accept an external option string (for example Mongo-style `$options` or SQLite helper wrappers), the supported external flag alphabet is:
+`common.CompileFlags.parse(flags_str)` parses the native engine-facing string flags:
 
 - `i`
 - `m`
@@ -219,117 +299,70 @@ For integrations that accept an external option string (for example Mongo-style 
 - `x`
 - `u`
 
-### External flag rules
+Unknown flags return `error.InvalidFlags`.
 
-- **Supported flags:** exactly `imsxu`
-- **Unknown flags:** hard error
-- **Order:** irrelevant
-- **Duplicates:** allowed and semantically ignored
-- **Mongo `u`:** accepted but treated as a redundant no-op by the Mongo parser
+This native parser preserves direct engine semantics, including `u -> .unicode = true`.
+
+---
+
+## `common.MongoExternalOptions`
+
+The `common` module also exports a helper for parsing Mongo-style external option strings:
+
+```zig
+pub const MongoExternalOptions = struct {
+    compile_flags: CompileFlags,
+
+    pub fn parse(flags_str: []const u8) !MongoExternalOptions
+    pub fn canonicalSlice(self: *const MongoExternalOptions) []const u8
+}
+```
+
+This helper exists for consumers who need Mongo-style option parsing semantics.
+
+### Mongo-style option rules implemented by this helper
+
+Accepted option letters:
+
+- `i`
+- `m`
+- `s`
+- `x`
+- `u`
+
+Behavior:
+
+- unknown flags are errors
+- order is irrelevant
+- duplicates are ignored
+- `u` is accepted but treated as redundant by this helper
+- `canonicalSlice()` returns a canonicalized `i`, `m`, `s`, `x`-ordered cache-friendly representation with redundant `u` removed
 
 Examples:
 
 - `"im"` and `"mi"` are equivalent
-- `"ii"` is valid and equivalent to `"i"`
-- `"u"` is valid and canonicalizes to the empty canonical option string
+- `"ii"` is equivalent to `"i"`
+- `"u"` is valid and canonicalizes to `""`
 - `"g"` is invalid
-- `"y"` is invalid
 
-### Canonicalization
-
-`MongoExternalOptions.parse(...)` produces:
-
-- `compile_flags` — the engine flags actually used for Mongo wrapper compilation
-- `canonicalSlice()` — a canonical cache-key-friendly representation using stable `i`, `m`, `s`, `x` order with redundant `u` removed
-
-That means semantically equivalent Mongo option strings share the same cache identity:
-
-- `"im"`
-- `"mi"`
-- `"iim"`
-- `"uim"`
-
-all canonicalize to the same effective option set.
-
-### Why this matters
-
-Wrapper layers should rely on this documented contract, **not** on incidental regex parser behavior.
-
-The wrapper should own only:
-
-- flag-string validation/canonicalization
-- cache key normalization
-- transport-specific error mapping
-
-The engine owns:
-
-- regex syntax
-- inline modifiers like `(?i)`
-- PCRE verbs like `(*UTF)` / `(*UCP)`
-- Unicode properties like `\p{Latin}`
-- lookaround, recursion, backreferences, and other pattern semantics
-
----
-
-## MongoDB-compatible wrapper contract
-
-MongoDB documents `$options` with support for:
-
-- `i`
-- `m`
-- `s`
-- `x`
-- `u`
-
-MongoDB also documents `u` as **accepted but redundant because UTF is enabled by default**.
-
-### Current project status versus MongoDB
-
-The Mongo wrapper contract now follows that external-option rule explicitly:
-
-- `u` is accepted
-- `u` is redundant in the Mongo wrapper parse path
-- unknown flags are hard errors
-- duplicates are ignored
-- order is irrelevant
-- cache identity is based on canonicalized Mongo options, not raw input order
-
-This behavior is implemented through `common.MongoExternalOptions.parse(...)` and consumed by the SQLite/BSON wrapper path.
-
-### Recommended wrapper policy
-
-If your wrapper exposes a Mongo-style `flags` / `$options` string, the public contract is:
-
-1. Accept only `imsxu`
-2. Reject unknown options explicitly
-3. Canonicalize duplicates and order before caching
-4. Treat Mongo `u` as accepted but redundant
-5. Preserve regex pattern semantics as engine-owned
-
-### Important boundary
-
-This does **not** mean the native engine-facing `CompileFlags.parse(...)` path changed meaning.
-
-- native `CompileFlags.parse("u")` still enables the engine's internal `.unicode` flag
-- Mongo wrapper entrypoints should use `MongoExternalOptions.parse(...)`
-- direct engine users should choose the parser that matches their intended contract
+This helper is part of the library, but it is **not** the primary compile path for normal Zig callers. Normal Zig callers can pass typed `CompileFlags` directly.
 
 ---
 
 ## Pattern-language ownership
 
-The following are **engine-owned**, not wrapper-owned:
+Regex syntax and pattern semantics are engine-owned.
+
+That includes, among other things:
 
 - inline modifiers: `(?i)`, `(?m)`, `(?s)`, `(?x)`, `(?-i)`
 - PCRE verbs: `(*UTF)`, `(*UCP)`
 - Unicode properties: `\p{...}`, `\P{...}`
-- lookahead/lookbehind
+- lookahead / lookbehind
 - recursion and subroutines
 - backreferences and named captures
 - grapheme matching `\X`
 - anchor semantics such as `\A`, `\z`, `\Z`
-
-If an integration layer tries to parse or reinterpret these features independently, that is outside the intended architecture.
 
 ---
 
@@ -339,19 +372,19 @@ If an integration layer tries to parse or reinterpret these features independent
 
 Patterns containing an internal null byte are invalid.
 
-### External flag strings
+### Native string flags
 
-External flag strings containing an internal null byte are invalid.
+Unknown native string flags are invalid.
 
-### Unknown external flags
+### Mongo-style external options helper
 
-Unknown external flags are invalid.
+Unknown Mongo-style external option flags are invalid.
 
 ---
 
 ## Error model
 
-Public callers should assume the following high-level error categories may occur:
+Public callers should expect high-level failures such as:
 
 - invalid pattern
 - invalid flags
@@ -360,61 +393,34 @@ Public callers should assume the following high-level error categories may occur
 - timeout / backtracking abort protection
 - allocation failure
 
-Do not write logic that depends on undocumented internal parser error distinctions unless you control both ends of the integration.
+Do not build logic that depends on undocumented internal parser/compiler error distinctions unless you control both sides of the integration.
 
 ---
 
-## Mongo-compatibility: honest status
+## C API
 
-This repository is reasonably described as **Mongo-compatible in many important regex behaviors**, especially around:
+The repository also exports a small C API from `src/c_api.zig`.
 
-- PCRE-like syntax support
-- inline modifiers
-- Unicode properties and selected PCRE verbs
-- advanced constructs used in Mongo-derived edge cases
-- explicit erroring on invalid external flags
+### Exported C functions
 
-However, if you want to claim strict Mongo parity for regex options and semantics, keep these gaps in mind:
+- `zig_regex_compile`
+- `zig_regex_free`
+- `zig_regex_is_match`
+- `zig_regex_find`
+- `zig_match_get_text`
+- `zig_match_get_start`
+- `zig_match_get_end`
+- `zig_match_free`
+- `zig_regex_version`
 
-1. **Mongo-compatible external `u` now behaves as a redundant no-op only in the Mongo wrapper parse path**
-   - the native engine-facing `CompileFlags.parse("u")` path still intentionally enables `.unicode`
-2. **Unicode-mode behavior is still partial rather than globally uniform once inside engine semantics**
-   - for example `\d`/word boundaries are Unicode-sensitive under native `.unicode`, while other escapes are not clearly switched the same way
-3. **Some PCRE features remain intentionally unsupported or not implemented**
-   - e.g. script runs `(*sr:)`
-   - `(*BSR_UNICODE)`
-   - unsupported PCRE verbs such as `(*FAIL)`, `(*ACCEPT)`, `(*COMMIT)`
-4. **Companion wrapper behavior is not yet packaged and versioned as a first-class public API surface**
-5. **Documentation must be kept aligned with code and tests**
-   - stale docs are compatibility debt
+### Important C API note
+
+`zig_match_get_text()` currently returns a pointer into the match slice and assumes null termination.
+That is a real limitation of the current C API and should be treated carefully by foreign callers.
 
 ---
 
-## What would be needed to claim stronger Mongo compatibility
-
-To make the “mongo-compat” claim crisper and easier to defend publicly, the codebase should continue with the following:
-
-1. **Keep the split boundary explicit**
-   - Mongo wrapper entrypoints use `MongoExternalOptions.parse(...)`
-   - native engine callers use `CompileFlags.parse(...)` or typed `CompileFlags`
-
-2. **Audit Unicode-sensitive escapes/classes for consistency under Mongo expectations**
-   - especially `\w`, `\W`, and other classes if Mongo/PCRE/UCP expectations are part of the claim
-
-3. **Document wrapper/public API separately from internal engine APIs**
-   - the Zig module API and the SQLite/BSON helper contract should each have a stable document
-
-4. **Keep unsupported features explicitly listed**
-   - so “mongo-compat” never silently implies full PCRE2 parity
-
-5. **Add integration coverage for canonical Mongo option handling**
-   - e.g. `"mi" == "im"`
-   - duplicate options reuse the same semantics
-   - `u` matches the same as no options in Mongo wrapper mode
-
----
-
-## Minimal examples
+## Examples
 
 ### Basic compile and match
 
@@ -432,7 +438,7 @@ test "basic match" {
 }
 ```
 
-### Top-level flags
+### Compile with flags
 
 ```zig
 const std = @import("std");
@@ -445,6 +451,7 @@ test "top-level flags" {
         .case_insensitive = true,
         .multiline = true,
         .dot_all = true,
+        .extended = true,
     });
     defer re.deinit();
 
@@ -452,33 +459,71 @@ test "top-level flags" {
 }
 ```
 
-### External flag parsing
+### Reusable session and buffer
 
 ```zig
 const std = @import("std");
 const regex = @import("regex");
 
-test "external flags contract" {
-    const flags = try regex.common.CompileFlags.parse("imsu");
-    try std.testing.expect(flags.case_insensitive);
-    try std.testing.expect(flags.multiline);
-    try std.testing.expect(flags.dot_all);
-    try std.testing.expect(flags.unicode);
-    try std.testing.expectError(error.InvalidFlags, regex.common.CompileFlags.parse("g"));
+test "session with reusable buffer" {
+    const allocator = std.testing.allocator;
+
+    var re = try regex.Regex.compile(allocator, "\\d+");
+    defer re.deinit();
+
+    var session = try re.session(allocator);
+    defer session.deinit();
+
+    var buffer = try re.matchBuffer(allocator);
+    defer buffer.deinit();
+
+    try std.testing.expect(try session.findInto("abc123def", &buffer));
+    try std.testing.expectEqualStrings("123", buffer.slice);
+}
+```
+
+### Mongo-style external option parsing helper
+
+```zig
+const std = @import("std");
+const regex = @import("regex");
+
+test "mongo-style external options helper" {
+    const parsed = try regex.common.MongoExternalOptions.parse("uimsi");
+
+    try std.testing.expect(parsed.compile_flags.case_insensitive);
+    try std.testing.expect(parsed.compile_flags.multiline);
+    try std.testing.expect(parsed.compile_flags.dot_all);
+    try std.testing.expect(!parsed.compile_flags.unicode);
+    try std.testing.expectEqualStrings("ims", parsed.canonicalSlice());
 }
 ```
 
 ---
 
+## Current known semantic caveats
+
+If you are evaluating strict Mongo or strict PCRE2 parity, keep these caveats in mind:
+
+1. Native `CompileFlags.parse("u")` still intentionally enables `.unicode`
+2. Unicode-sensitive behavior is improved for `\\d`, `\\D`, `\\w`, `\\W`, `\\b`, and `\\B`, but broader Unicode/PCRE parity still depends on the rest of the engine surface
+3. Some PCRE features remain intentionally unsupported or not implemented
+
+That does **not** make the library unstable; it just means callers should avoid over-claiming compatibility beyond what is explicitly documented.
+
+---
+
 ## Source of truth
 
-When this document and other prose disagree:
+When this document and other prose disagree, prefer the code in this order:
 
-1. `src/root.zig` defines the exported Zig module surface
-2. `src/common.zig` defines the external top-level flag parser contract
-3. engine behavior in `src/parser.zig`, `src/regex.zig`, `src/text_policy.zig`, and matching engines defines actual regex semantics
-4. integration wrappers should document only the subset they intentionally expose
+1. `src/root.zig` for exported module surface
+2. `src/regex.zig` for core matching APIs
+3. `src/common.zig` for flag types and parsing helpers
+4. `src/parser.zig` for top-level lexical and syntax behavior
+5. `src/c_api.zig` for the embedded C API
 
 ---
 
 **Last updated:** 2026-03-30
+**Package version in code:** `0.1.0`
