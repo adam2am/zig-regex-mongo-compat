@@ -99,7 +99,7 @@ pub const profiling = @import("profiling.zig");
 // Version information
 pub const version = std.SemanticVersion{
     .major = 0,
-    .minor = 1,
+    .minor = 7,
     .patch = 0,
 };
 

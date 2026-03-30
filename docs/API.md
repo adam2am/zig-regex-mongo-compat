@@ -526,4 +526,4 @@ When this document and other prose disagree, prefer the code in this order:
 ---
 
 **Last updated:** 2026-03-30
-**Package version in code:** `0.1.0`
+**Package version in code:** `0.7.0`

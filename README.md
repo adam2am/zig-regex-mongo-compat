@@ -6,7 +6,7 @@
 
 [![Zig](https://img.shields.io/badge/Zig-0.15.2-orange.svg)](https://ziglang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-608%2F608%20passing-green.svg)](test/)
+[![Tests](https://img.shields.io/badge/tests-631%2F631%20passing-green.svg)](test/)
 
 [Features](#features) - [Installation](#installation) - [Quick Start](#quick-start) - [Test Results](#test-results) - [Documentation](#documentation)
 
@@ -20,7 +20,7 @@ zig-regex-mongo-compat is a fork of [zig-regex](https://github.com/zig-utils/zig
 
 The current architecture uses a **bytecode VM** as the primary engine for the regular-safe subset and an **optimized backtracking engine** for advanced PCRE-compatible constructs such as lookaround, recursion, backreferences, conditionals, atomic groups, and extended grapheme matching. Shared execution planning and text-policy layers keep input validation, Unicode boundary behavior, and engine routing explicit and centralized.
 
-**Current Status:** v0.5.0 - 608/608 Zig tests passing (100%)
+**Current Status:** v0.7.0 - 631/631 Zig tests passing (100%)
 
 ## Features
 
@@ -105,7 +105,7 @@ The current architecture uses a **bytecode VM** as the primary engine for the re
 - **Memory Safety**: Full control via Zig allocators, no hidden allocations, zero leaks
 - **O(1) Character Matching**: FastBitSet provides 256-bit lookup for ASCII/Latin-1 characters
 - **ReDoS Protection**: Planning + hard-abort protection prevent catastrophic backtracking from taking down matching
-- **608 Zig Tests**: 608/608 passing (100%) - native low-level coverage across anchors (`\\A`, `\\z`, `\\Z`), recursion, backreferences, Unicode, atomic groups, graphemes, and parser/compiler hardening
+- **631 Zig Tests**: 631/631 passing (100%) - native low-level coverage across anchors (`\\A`, `\\z`, `\\Z`), recursion, backreferences, Unicode, atomic groups, graphemes, parser/compiler hardening, and Unicode-aware word-class semantics
 - **304 Companion Integration Tests**: Verified in the `bson_helpers` SQLite wrapper suite, covering BSON path extraction, wrapper cache isolation, error propagation, and MongoDB-style end-to-end PCRE edge cases
 - **Production Ready**: Core features stable, implemented Unicode/script support well-covered, and known limitations documented
 
@@ -222,13 +222,14 @@ bun run build && bun test/ts/test_edge_cases.ts
 
 ## Test Results
 
-**Overall (library repo):** 608/608 Zig tests passing (100%)
+**Overall (library repo):** 631/631 Zig tests passing (100%)
 
 **Companion wrapper verification:** 304/304 `bson_helpers` TS integration tests passing (end-to-end SQLite extension coverage)
 
 ### ✅ Fully Working
 - Core regex features (anchors, quantifiers, character classes, groups)
 - Unicode support for the currently implemented script properties (Latin, Greek, Cyrillic, Arabic, Hebrew, Han, Hiragana, Katakana)
+- Unicode-aware `\\w`, `\\W`, `\\b`, and `\\B` under `(*UCP)` or top-level `.unicode = true`
 - Literal and `(*UCP)` boundary coverage for additional non-ASCII text such as Hangul/Korean
 - PCRE flags (`(*UTF)`, `(*UCP)`)
 - Lookahead/lookbehind (positive and negative)
@@ -289,12 +290,13 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Roadmap
 
-### v0.7.0 (Next)
+### v0.7.0
 - [x] FastBitSet for O(1) ASCII matching
 - [x] Recursive patterns `(?R)`, `(?0)`, `(?1)`-`(?9)` with depth limit
 - [x] ReDoS protection with hard-abort flag
 - [x] PCRE2 10.47+ `(?R(grouplist))` / `(?n(grouplist))` capture return values from recursion/subroutines
 - [x] Relative, absolute, and named backreferences `\g{-1}`, `\g{+1}`, `\g{1}`, `\g{name}`
+- [x] Unicode-aware `\w` and `\W` under `(*UCP)` and top-level `.unicode`
 - [ ] Script runs `(*sr:)`
 - [ ] `(*BSR_UNICODE)` flag
 
