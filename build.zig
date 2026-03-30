@@ -295,6 +295,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_inline_modifiers_tests = b.addRunArtifact(inline_modifiers_tests);
 
+    const extended_mode_comments_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/extended_mode_comments.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "regex", .module = mod },
+            },
+        }),
+    });
+    const run_extended_mode_comments_tests = b.addRunArtifact(extended_mode_comments_tests);
+
     const debug_inline_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/debug_inline.zig"),
@@ -495,6 +507,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_multiline_dotall_tests.step);
     test_step.dependOn(&run_named_captures_tests.step);
     test_step.dependOn(&run_inline_modifiers_tests.step);
+    test_step.dependOn(&run_extended_mode_comments_tests.step);
     test_step.dependOn(&run_debug_inline_tests.step);
     test_step.dependOn(&run_unicode_debug_tests.step);
     test_step.dependOn(&run_test_90_debug.step);
@@ -797,6 +810,9 @@ pub fn build(b: *std.Build) void {
 
     const test_multiline_dotall_step = b.step("test-multiline-dotall", "Run multiline_dotall tests");
     test_multiline_dotall_step.dependOn(&run_multiline_dotall_tests.step);
+
+    const test_extended_mode_comments_step = b.step("test-extended-mode-comments", "Run extended_mode_comments tests");
+    test_extended_mode_comments_step.dependOn(&run_extended_mode_comments_tests.step);
 
     const test_parser_edge_cases_step = b.step("test-parser-edge-cases", "Run parser_compiler_edge_cases tests");
     test_parser_edge_cases_step.dependOn(&run_parser_compiler_edge_cases_tests.step);

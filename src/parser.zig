@@ -64,6 +64,7 @@ pub const Lexer = struct {
     start_pos: usize,
     flags: common.CompileFlags,
     literal_mode: bool = false,
+    extended_trivia_enabled: bool = true,
 
     pub fn init(input: []const u8, flags: common.CompileFlags) Lexer {
         return .{
@@ -148,6 +149,28 @@ pub const Lexer = struct {
     fn literalTokenForCurrentCodepoint(self: *Lexer, c: u8) Token {
         const start = self.codepointStartForCurrentPos(c);
         return self.makeTokenWithSpan(.literal, c, start, self.pos);
+    }
+
+    fn skipExtendedTrivia(self: *Lexer) void {
+        if (!self.flags.extended or !self.extended_trivia_enabled or self.literal_mode) return;
+
+        while (self.peek()) |c| {
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+                _ = self.advance();
+                continue;
+            }
+
+            if (c == '#') {
+                _ = self.advance();
+                while (self.peek()) |comment_char| {
+                    if (comment_char == '\n' or comment_char == '\r') break;
+                    _ = self.advance();
+                }
+                continue;
+            }
+
+            break;
+        }
     }
 
     fn parseEscape(self: *Lexer) RegexError!Token {
@@ -238,17 +261,8 @@ pub const Lexer = struct {
 
     pub fn next(self: *Lexer) RegexError!Token {
         self.start_pos = self.pos;
-
-        if (self.flags.extended) {
-            while (self.peek()) |c| {
-                if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
-                    _ = self.advance();
-                } else {
-                    break;
-                }
-            }
-            self.start_pos = self.pos;
-        }
+        self.skipExtendedTrivia();
+        self.start_pos = self.pos;
 
         const c = self.advance() orelse {
             return self.makeToken(.eof, 0);
@@ -1594,6 +1608,10 @@ pub const Parser = struct {
     /// Parse character class [...]
     fn parseCharClass(self: *Parser) !*ast.Node {
         const start = self.current_token.span.start;
+        const prev_extended_trivia = self.lexer.extended_trivia_enabled;
+        self.lexer.extended_trivia_enabled = false;
+        defer self.lexer.extended_trivia_enabled = prev_extended_trivia;
+
         try self.advance(); // consume '['
 
         var negated = false;

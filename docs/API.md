@@ -178,7 +178,7 @@ These flags are **implemented today**.
 - `case_insensitive` — case-insensitive matching
 - `multiline` — `^` and `$` operate on line boundaries
 - `dot_all` — `.` matches newlines
-- `extended` — insignificant whitespace is skipped by the lexer in top-level extended mode
+- `extended` — insignificant whitespace and `# ... end-of-line` comments are skipped by the lexer in extended mode outside character classes
 - `unicode` — enables Unicode-sensitive behavior currently used by parts of text policy and selected escapes
 
 ### Important note on `unicode`
