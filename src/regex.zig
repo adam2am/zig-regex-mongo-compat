@@ -310,7 +310,7 @@ pub const ExecutionSession = struct {
                 };
             },
             .backtracking => blk: {
-                var engine = try backtrack.BacktrackEngine.init(allocator, regex.ast.?.root, regex.capture_count, regex.flags, if (regex.named_captures) |*nc| nc else null, regex.word_boundary_policy);
+                var engine = try backtrack.BacktrackEngine.init(allocator, regex.ast.?.root, regex.capture_count, regex.flags, if (regex.named_captures) |*nc| nc else null, regex.word_boundary_policy, regex.input_validation_policy == .strict_utf8);
                 errdefer engine.deinit();
 
                 const scratch_match = try MatchBuffer.init(allocator, regex.capture_count);

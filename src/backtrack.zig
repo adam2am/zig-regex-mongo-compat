@@ -56,6 +56,7 @@ pub const BacktrackEngine = struct {
     /// Borrowed from the compiled Regex, which outlives matchers created from it.
     named_captures: ?*const std.StringArrayHashMap(usize),
     word_boundary_policy: text_policy.WordBoundaryPolicy,
+    trusted_utf8: bool,
 
     /// Cycle detection stack for recursion (prevents infinite empty loops natively)
     recursion_call_stack: std.ArrayList(RecursionFrame),
@@ -87,7 +88,7 @@ pub const BacktrackEngine = struct {
         stack_base: usize,
     };
 
-    pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags, named_captures: ?*const std.StringArrayHashMap(usize), word_boundary_policy: text_policy.WordBoundaryPolicy) !BacktrackEngine {
+    pub fn init(allocator: std.mem.Allocator, root: *ast.Node, capture_count: usize, flags: common.CompileFlags, named_captures: ?*const std.StringArrayHashMap(usize), word_boundary_policy: text_policy.WordBoundaryPolicy, trusted_utf8: bool) !BacktrackEngine {
         const captures = try allocator.alloc(CaptureGroup, capture_count);
         for (captures) |*cap| {
             cap.* = .{ .start = 0, .end = 0, .matched = false };
@@ -114,6 +115,7 @@ pub const BacktrackEngine = struct {
             .aborted = false,
             .named_captures = named_captures,
             .word_boundary_policy = word_boundary_policy,
+            .trusted_utf8 = trusted_utf8,
             .recursion_call_stack = std.ArrayList(RecursionFrame).initCapacity(allocator, DEFAULT_MAX_RECURSION_DEPTH) catch unreachable,
             .match_state_stack = std.ArrayList(MatchState).initCapacity(allocator, 16) catch unreachable,
         };
@@ -367,7 +369,7 @@ pub const BacktrackEngine = struct {
                 const class = node.data.char_class.class;
                 if (pos >= self.input.len) break :blk null;
 
-                const char_result = decodeUtf8ForwardWithLen(self.input, pos) orelse break :blk null;
+                const char_result = self.decodeUtf8ForwardWithLen(self.input, pos) orelse break :blk null;
                 const matches = class.matches(char_result.codepoint);
 
                 break :blk if (matches) pos + char_result.len else null;
@@ -414,7 +416,7 @@ pub const BacktrackEngine = struct {
         const ignore_case = literal_data.literal.ignore_case;
 
         // Decode UTF-8 character at current position
-        const utf8_char = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+        const utf8_char = self.decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
         const input_char = utf8_char.codepoint;
 
         const matches = if (ignore_case)
@@ -429,7 +431,7 @@ pub const BacktrackEngine = struct {
         if (pos >= self.input.len) return null;
 
         // Decode UTF-8 character at current position
-        const utf8_char = decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
+        const utf8_char = self.decodeUtf8ForwardWithLen(self.input, pos) orelse return null;
         const c = utf8_char.codepoint;
 
         if (!any_data.any.dot_all and c == '\n') return null;
@@ -872,24 +874,28 @@ pub const BacktrackEngine = struct {
         try positions.append(self.allocator, .{ .end_pos = current_pos, .stack_base = try self.pushState() });
     }
 
-    fn decodeUtf8ForwardWithLen(input: []const u8, pos: usize) ?struct { codepoint: u21, len: u8 } {
+    fn decodeUtf8ForwardWithLen(self: *const BacktrackEngine, input: []const u8, pos: usize) ?struct { codepoint: u21, len: u8 } {
         if (pos >= input.len) return null;
+        if (self.trusted_utf8) {
+            const res = unicode.decodeUtf8Trusted(input, pos);
+            return .{ .codepoint = res.codepoint, .len = @intCast(res.len) };
+        }
         const len = std.unicode.utf8ByteSequenceLength(input[pos]) catch return null;
         if (pos + len > input.len) return null;
         const codepoint = std.unicode.utf8Decode(input[pos .. pos + len]) catch return null;
         return .{ .codepoint = codepoint, .len = len };
     }
 
-    fn decodeUtf8Forward(input: []const u8, pos: usize) ?u21 {
-        const result = decodeUtf8ForwardWithLen(input, pos) orelse return null;
+    fn decodeUtf8Forward(self: *const BacktrackEngine, input: []const u8, pos: usize) ?u21 {
+        const result = self.decodeUtf8ForwardWithLen(input, pos) orelse return null;
         return result.codepoint;
     }
 
-    fn decodeUtf8Backward(input: []const u8, pos: usize) ?u21 {
+    fn decodeUtf8Backward(self: *const BacktrackEngine, input: []const u8, pos: usize) ?u21 {
         if (pos == 0) return null;
         var i = pos - 1;
         while (i > 0 and (input[i] & 0xC0) == 0x80) : (i -= 1) {}
-        return decodeUtf8Forward(input, i);
+        return self.decodeUtf8Forward(input, i);
     }
 
     /// Push current captures to the stack in O(1) amortized time
@@ -1070,7 +1076,7 @@ pub const BacktrackEngine = struct {
         var ptr = pos;
 
         // Decode first codepoint
-        const first = decodeUtf8ForwardWithLen(self.input, ptr) orelse return null;
+        const first = self.decodeUtf8ForwardWithLen(self.input, ptr) orelse return null;
         var lgb = getGraphemeBreakProperty(first.codepoint);
         ptr += first.len;
 
@@ -1078,7 +1084,7 @@ pub const BacktrackEngine = struct {
         var in_ep_sequence = (lgb == .gbExtended_Pictographic);
 
         while (ptr < self.input.len) {
-            const next = decodeUtf8ForwardWithLen(self.input, ptr) orelse break;
+            const next = self.decodeUtf8ForwardWithLen(self.input, ptr) orelse break;
             const rgb = getGraphemeBreakProperty(next.codepoint);
 
             var breaks = true;
@@ -1168,7 +1174,7 @@ pub const BacktrackEngine = struct {
                 char_start -= 1;
             }
 
-            const cp = decodeUtf8Forward(self.input, char_start) orelse break;
+            const cp = self.decodeUtf8Forward(self.input, char_start) orelse break;
             if (getGraphemeBreakProperty(cp) != .gbRegional_Indicator) {
                 break;
             }
@@ -1264,7 +1270,7 @@ test "backtrack: ReDoS protection - nested quantifiers (a+)+b" {
     var named_captures = std.StringArrayHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}));
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}), true);
     defer engine.deinit();
 
     // Should timeout/abort instead of hanging
@@ -1302,7 +1308,7 @@ test "backtrack: ReDoS protection - nested stars (a*)*b" {
     var named_captures = std.StringArrayHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}));
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}), true);
     defer engine.deinit();
 
     const result = engine.find(input) catch null;
@@ -1332,7 +1338,7 @@ test "backtrack: ReDoS protection - ambiguous alternation (a|a)*b" {
     var named_captures = std.StringArrayHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}));
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}), true);
     defer engine.deinit();
 
     const result = engine.find(input) catch null;
@@ -1362,7 +1368,7 @@ test "backtrack: configurable step limit" {
     var named_captures = std.StringArrayHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}));
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}), true);
     defer engine.deinit();
 
     // Set a very low limit to test timeout behavior
@@ -1398,7 +1404,7 @@ test "backtrack: step counter increments" {
     var named_captures = std.StringArrayHashMap(usize).init(allocator);
     defer named_captures.deinit();
 
-    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}));
+    var engine = try BacktrackEngine.init(allocator, tree.root, tree.capture_count, .{}, &named_captures, text_policy.fromFlags(.{}), true);
     defer engine.deinit();
 
     const initial_count = engine.step_count;
